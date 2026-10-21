@@ -6,9 +6,12 @@ link to the page that explains it.
 
 ## For users
 
+RunPod deployment: [Pod template](dev/runpod.md), including the public HTTP proxy and access warning.
+
 | Page | What it covers |
 |---|---|
 | [Getting started](user/getting-started.md) | Download, first launch, first model pack, first song, where files live |
+| [Data folder and upgrades](user/data-folder.md) | Shared data across versions, move, repoint, import and recovery |
 | [Running on Google Colab](user/colab.md) | The Colab notebook: install, models, Drive persistence, opening the UI |
 | [Backends](user/backends.md) | ACE-Step 1.5, MiniMax-Music3 and YuE2: what each is for, how to switch, capability matrix |
 | [Generation](user/generation.md) | The global parameter bar: models, steps, seeds, guidance, post-processing chain, queue, task modes |
@@ -74,5 +77,6 @@ In sidebar order.
 | [Writing and maintaining the docs](dev/docs-contributing.md) | Layout, page template, generated tables, the checker |
 | [Writing style](dev/writing-style.md) | Rules for prose a human reads |
 | [UI design rules](dev/ui-design.md) | The shared controls every screen uses (dropdown, toggle, hover explanation), accent colours, and the check that enforces them |
+| [TanStack Query audit and migration](dev/tanstack-query.md) | Every TanStack integration audited: deprecated fetchQuery sweep, useQuery/useMutation gaps, hook folder conventions, phased migration plan |
 | [Skill library](../.claude/skills/README.md) | Procedures per maintenance domain for coding agents |
-| [AGENTS.md](../AGENTS.md) | Project rules for agents, including the documentation ownership table |
+| `AGENTS.md` (local only) | Project rules for agents, including the documentation ownership table |

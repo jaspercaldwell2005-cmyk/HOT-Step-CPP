@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { jobCover, mapYue2Params, yue2PlanMode } from './generate.js';
+import { jobCover, mapYue2Params, planYue2Jobs, yue2PlanMode, type Yue2PreparedJob } from './generate.js';
+import { yue2Seed, yue2SeedPlus } from './client.js';
 import type { GenerationJob } from '../../generation/jobTypes.js';
 import type { Yue2PersistedSelection } from './index.js';
 
@@ -97,6 +98,27 @@ const pick: Yue2PersistedSelection = {
 const abc = ['X:1', 'M:4/4', 'L:1/4', 'Q:1/4=60', 'K:C', '% verse', 'V: Vocal', 'C4|', ''].join('\n');
 const lyrics = '[Verse]\nfirst line';
 
+test('score provenance survives app planning, engine fallback and instrumental planning', () => {
+  for (const instrumental of [false, true]) {
+    for (const yue2AutoReplan of [false, true]) {
+      const mapped = mapYue2Params({ caption: 'folk', lyrics, instrumental, yue2AutoReplan }, pick);
+      assert.equal(mapped.abcSupplied, false, 'no user score, including engine fallback');
+      // planYue2Jobs installs the chosen LM score into the mutable request.
+      mapped.req.abc = abc;
+      assert.equal(mapped.abcSupplied, false, 'an app-planned score is still LM-planned');
+    }
+  }
+});
+
+test('score provenance counts only supplied scores the request actually uses', () => {
+  for (const yue2Abc of [undefined, '', '   ', abc]) {
+    for (const yue2Cot of ['full', 'off']) {
+      const mapped = mapYue2Params({ caption: 'folk', lyrics, yue2Abc, yue2Cot }, pick);
+      assert.equal(mapped.abcSupplied, yue2Abc === abc && yue2Cot !== 'off');
+    }
+  }
+});
+
 test('yue2LyricSchedule defaults to off when a score and lyrics are supplied', () => {
   const { req, notes } = mapYue2Params({ caption: 'folk', lyrics, yue2Abc: abc }, pick);
   assert.equal(req.lyric_schedule, undefined);
@@ -162,6 +184,9 @@ test('yue2PlanMode: every auto-replan, instrumental, cot and supplied-score comb
   }
   // Empty lyrics without the Instrumental switch is an instrumental too.
   assert.equal(yue2PlanMode({ yue2AutoReplan: false }, { cot: 'melody', lyrics: '' }), 'once');
+  // A planner strength of its own needs a plan job apart from the render.
+  assert.equal(yue2PlanMode({ yue2AutoReplan: false }, { cot: 'full', lyrics }, true), 'once');
+  assert.equal(yue2PlanMode({ yue2AutoReplan: false }, { cot: 'off', lyrics }, true), null);
 });
 
 test('a supplied score is moved for an instrumental whatever re-planning is, and left alone for a vocal cover', () => {
@@ -176,4 +201,97 @@ test('a supplied score is moved for an instrumental whatever re-planning is, and
       assert.equal(vocal.abc, native.trim(), `vocal, autoReplan ${yue2AutoReplan}, cot ${cot}`);
     }
   }
+});
+
+test('re-plan seeds follow from the job seed, so a pinned seed replays the same plans', async () => {
+  const { yue2ReplanSeed } = await import('./generate.js');
+  assert.equal(yue2ReplanSeed(2110292260, 1), 2110292260);
+  const run = (base: number) => Array.from({ length: 10 }, (_, i) => yue2ReplanSeed(base, i + 1));
+  assert.deepEqual(run(4242), run(4242));
+  assert.equal(new Set(run(4242)).size, 10);
+  for (const s of run(4294967295)) assert.ok(Number.isInteger(s) && Number(s) >= 0 && Number(s) < 2 ** 32);
+  assert.equal(yue2ReplanSeed('15213961153666092475', 1), '15213961153666092475');
+  assert.equal(yue2ReplanSeed('15213961153666092475', 2), '15213961153667092478');
+});
+
+test('a random seed is drawn exact (32 bits), so a take replays under the seed it recorded', () => {
+  for (let i = 0; i < 200; i++) {
+    const seed = mapYue2Params({ caption: 'folk', lyrics: 'la', randomSeed: true }, pick).req.seed!;
+    assert.ok(Number.isSafeInteger(seed) && Number(seed) >= 0);
+    assert.equal(Number(JSON.stringify({ seed }).match(/\d+/)![0]), seed);
+  }
+  assert.equal(mapYue2Params({ caption: 'folk', lyrics: 'la', seed: 12345 }, pick).req.seed, 12345);
+});
+
+test('the largest random seed stays exact after the engine derives from it (song offset, retries)', () => {
+  const real = Math.random;
+  Math.random = () => 1 - Number.EPSILON;
+  try {
+    const seed = mapYue2Params({ caption: 'folk', lyrics: 'la', randomSeed: true }, pick).req.seed!;
+    assert.equal(seed, 2 ** 32 - 1);
+    const derived = BigInt(seed) + 1000003n * 100n + 64n;
+    assert.equal(BigInt(JSON.parse(JSON.stringify({ s: Number(derived) })).s), derived);
+  } finally { Math.random = real; }
+});
+
+test('a seed above 2^53 reaches the engine request as its exact decimal string', () => {
+  const big = '15213961153666092475';
+  const { req } = mapYue2Params({ caption: 'folk', lyrics: 'la', seed: big, yue2NoiseSeed: big }, pick);
+  assert.equal(req.seed, big);
+  assert.equal(req.noise_seed, big);
+  assert.match(JSON.stringify(req), /"seed":"15213961153666092475"/);
+  assert.equal(yue2SeedPlus(big, 3), '15213961153666092478');
+  assert.equal(yue2Seed(big), big);
+  assert.equal(yue2Seed('42'), 42);        // a safe value stays a plain number
+  assert.equal(yue2Seed(123456789), 123456789); // legacy numeric sessions
+  assert.equal(yue2Seed('18446744073709551616'), undefined); // past uint64
+});
+
+test('planning keeps a pinned uint64 seed: engine plan request, then the render request', async t => {
+  const big = '15213961153666092475';
+  const abc = ['X:1', 'T:', 'M:4/4', 'L:1/32', 'Q:1/4=90', 'V: Vocal clef=treble name="Vocal Melody" snm="Vocal"',
+    'V: Ins clef=treble name="Ins Melody" snm="Inst."', 'K:C', '% verse', 'V: Vocal', '"C"c16"G"d16|', 'V: Ins', 'Z|', ''].join('\n');
+  const sent: Array<Record<string, any>> = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/yue2/props') return Response.json({ max_plan_batch: 1 });
+    if (url.pathname === '/yue2/synth') { sent.push(JSON.parse(String(init?.body))); return Response.json({ id: 'p1' }); }
+    assert.equal(url.pathname, '/job');
+    const songs = sent[sent.length - 1].songs as Array<{ seed: string }>;
+    return Response.json({ status: 'done', tracks: songs.map((s, song) => ({ song, seed: s.seed, noise_seed: s.seed, variation: 0, abc, end_reason: 'completed' })) });
+  });
+  for (const yue2AutoReplan of [true, false]) {
+    sent.length = 0;
+    const { req } = mapYue2Params({ caption: 'folk', lyrics: 'la', seed: big, instrumental: !yue2AutoReplan, yue2AutoReplan, yue2ReplanAttempts: 1 }, pick);
+    assert.equal(req.seed, big);
+    const m = { job: { ...fakeJob(undefined, { instrumental: !yue2AutoReplan, yue2AutoReplan, yue2ReplanAttempts: 1 }), envelope: { backendId: 'yue2', models: {}, options: {} }, status: 'queued' }, req, log: () => {} } as unknown as Yue2PreparedJob;
+    await planYue2Jobs([m]);
+    assert.equal(sent[0].songs[0].seed, big, `plan request, autoReplan ${yue2AutoReplan}`);
+    assert.equal(m.req.seed, big, `render request, autoReplan ${yue2AutoReplan}`);
+  }
+});
+
+test('the experimental full-loop solvers and Plan Overdrive map to their plugins and params', () => {
+  const lie = mapYue2Params({ caption: 'folk', yue2NarSolver: 'tlie', yue2LieAmount: -0.1, yue2LieCurve: 'sections',
+    yue2LieSections: 'chorus=0.25', yue2NarScheduler: 'plan_overdrive', yue2OdShape: 'pulse', yue2OdDrive: 2 }, pick);
+  assert.equal(lie.req.infer_method, 'md_tlie_yue2');
+  assert.equal(lie.req.scheduler, 'md_plan_overdrive_yue2');
+  assert.equal(lie.req.plugin_params?.['md_tlie_yue2:lie'], -0.1);
+  assert.equal(lie.req.plugin_params?.['md_tlie_yue2:lie_curve'], 'sections');
+  assert.equal(lie.req.plugin_params?.['md_tlie_yue2:section_lies'], 'chorus=0.25');
+  assert.equal(lie.req.plugin_params?.['md_plan_overdrive_yue2:shape'], 'pulse');
+  assert.equal(lie.req.plugin_params?.['md_plan_overdrive_yue2:drive'], 2);
+  const eq = mapYue2Params({ caption: 'folk', yue2NarSolver: 'latent_eq', yue2EqGains: '0=1.2', yue2EqSection: 'chorus' }, pick);
+  assert.equal(eq.req.infer_method, 'md_latent_eq_yue2');
+  assert.equal(eq.req.plugin_params?.['md_latent_eq_yue2:gains'], '0=1.2');
+  assert.equal(eq.req.plugin_params?.['md_latent_eq_yue2:section_only'], 'chorus');
+});
+
+test('an unlisted select value or an oversized text param falls back to the plugin default with a note', () => {
+  const { req, notes } = mapYue2Params({ caption: 'folk', yue2NarSolver: 'tlie', yue2LieCurve: 'sideways',
+    yue2LieSections: 'x'.repeat(201) }, pick);
+  assert.equal(req.plugin_params?.['md_tlie_yue2:lie_curve'], undefined);
+  assert.equal(req.plugin_params?.['md_tlie_yue2:section_lies'], undefined);
+  assert.ok(notes.includes('Invalid yue2LieCurve — using the plugin default'));
+  assert.ok(notes.includes('Invalid yue2LieSections — using the plugin default'));
 });

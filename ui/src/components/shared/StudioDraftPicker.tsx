@@ -6,11 +6,11 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StudioDraftBody } from '../../../../server/src/contracts/studioDrafts';
 import type { StudioDraftDocument } from '../../services/studioDraftsApi';
-import type { StudioDraftControl } from '../../services/studioDraftMirror';
+import { draftNameKey, type StudioDraftControl } from '../../services/studioDraftMirror';
 import { StyledSelect } from './StyledSelect';
 
 const labelOf = (doc: StudioDraftDocument, textKey: string) => {
-  const draftName = doc.body.fields['cover-studio-draftName'];
+  const draftName = doc.body.fields[draftNameKey(doc.body.studio)];
   if (typeof draftName === 'string' && draftName.trim()) return draftName;
   const text = doc.body.fields[textKey];
   const name = typeof text === 'string' && text.trim() ? text.trim().slice(0, 40) : doc.id.slice(0, 8);
@@ -25,7 +25,9 @@ export const StudioDraftPicker: React.FC<{
   /** A reason this studio cannot take a draft, shown instead of loading it. */
   refuse?: (body: StudioDraftBody) => string;
   namedSave?: boolean;
-}> = ({ control, textKey, apply, refuse, namedSave }) => {
+  /** Inside a Drafts fold at the bottom of a column: no own padding. */
+  inline?: boolean;
+}> = ({ control, textKey, apply, refuse, namedSave, inline }) => {
   const { t } = useTranslation();
   const [drafts, setDrafts] = useState<StudioDraftDocument[]>([]);
   const [name, setName] = useState('');
@@ -40,8 +42,8 @@ export const StudioDraftPicker: React.FC<{
     // With a named save, the picker, name and button share the row in thirds,
     // the picker growing past its third to fit its placeholder, all three the
     // select's height and level with the centre column's header row.
-    <div className={`${namedSave ? 'grid grid-cols-[minmax(max-content,1fr)_1fr_1fr] items-stretch pt-3' : 'flex items-center py-1'} gap-2 px-4 text-[11px]`}>
-      <div className={namedSave ? 'min-w-0' : 'max-w-[18rem]'} onPointerDownCapture={refresh}>
+    <div className={`${namedSave ? `grid grid-cols-[minmax(max-content,1fr)_1fr_1fr] items-stretch${inline ? '' : ' pt-3'}` : `flex items-center${inline ? '' : ' py-1'}`} gap-2${inline ? '' : ' px-4'} text-[11px]`}>
+      <div className={namedSave ? 'min-w-0' : inline ? 'flex-1 min-w-0' : 'max-w-[18rem]'} onPointerDownCapture={refresh}>
         <StyledSelect<string> value="" size="sm" options={drafts.map(doc => ({ value: doc.id, label: labelOf(doc, textKey) }))}
           onChange={id => { void control.load(id, apply, refuse); }}
           placeholder={`${t('studioDrafts.load', 'Load saved draft')}…`}

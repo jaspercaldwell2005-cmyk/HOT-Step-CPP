@@ -14,7 +14,8 @@
 //   a same-name collision waits for an explicit keep-both or replace.
 import type { TypedDocument } from '../../../server/src/contracts/workflow';
 import { preferencesApi, type ImportPreferenceItem, type PresetFamily } from './preferencesApi';
-import { WorkflowRequestError } from './workflowApi';
+import { queriedPresetsApi } from '../queries/shell-queue/preferences';
+import { ApiError } from './apiError';
 
 export type PresetEntryStatus = 'saved' | 'creating' | 'saving' | 'deleting' | 'failed' | 'conflict';
 
@@ -85,7 +86,8 @@ export class PresetCollection<B extends Record<string, unknown>> {
 
   constructor(opts: PresetCollectionOptions) {
     this.opts = opts;
-    this.api = opts.api ?? preferencesApi.presets;
+    // Query owns the reads unless a caller supplies its own adapter.
+    this.api = opts.api ?? queriedPresetsApi;
   }
 
   // ── Store protocol (useSyncExternalStore / zustand subscribe) ─────────────
@@ -317,7 +319,7 @@ export class PresetCollection<B extends Record<string, unknown>> {
   private async failed(key: string, op: 'update' | 'delete', err: unknown): Promise<void> {
     const e = this.entry(key);
     if (!e?.id) return;
-    const status = err instanceof WorkflowRequestError ? err.status : 0;
+    const status = err instanceof ApiError ? err.status : 0;
     if (status !== 409 && status !== 404) {
       this.patch(key, { status: 'failed', pendingOp: op, error: `${op === 'delete' ? 'Delete' : 'Save'} failed: ${message(err)}` });
       return;

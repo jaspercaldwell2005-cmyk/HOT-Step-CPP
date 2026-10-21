@@ -42,6 +42,7 @@ it to snap that one field back. The reset persists like any other change — it 
 | Include latent file | Also downloads the `.hslat` latent file alongside each track, which can be reused for covers and remixing. |
 | Use filename as trigger word | Auto-injects the adapter's filename (minus the `.safetensors` extension) into the style description at generation time. |
 | Trigger word placement | Only shown when the trigger toggle above is on. Prepend, Append, or Replace, controlling where the trigger word lands relative to your style description. |
+| Update adapter references | Checks Lyric Studio album presets and clears references to deleted adapter weights. Lists each changed preset and removed adapter. Existing adapters, scales, and reference tracks are kept. Runs only when clicked. |
 
 ### Environment tab
 
@@ -87,6 +88,36 @@ With an Anthropic API key set, Claude model choices come from Anthropic's curren
 
 ### Storage & Data tab
 
+The **Data folder** panel shows the release app's active root and any external path
+overrides. Development checkouts keep their existing paths and show this panel as
+read-only. A process `HOT_STEP_DATA_ROOT` override must be cleared before changing
+the saved location.
+
+Choose an action, enter an absolute folder path, and click **Preview change**:
+
+- **Move current data** transfers managed data to an empty destination. Across
+  drives, the copy is verified before the source is removed.
+- **Use existing folder** switches to a compatible data folder without copying,
+  deleting or merging libraries.
+- **Create empty data folder** starts a new library and leaves the current data
+  in place.
+- **Import previous install** copies data from an older app folder into the current
+  empty library, preserving the previous install. Enter the old app folder rather
+  than its data subfolder.
+
+The preview shows source and destination paths, transfer size, and free-space needs
+for a transfer across drives. External locations remain in place. Running or queued
+generation, training and other work, or active downloads, prevent scheduling.
+**Confirm and restart** saves the pending operation outside the app folder and
+requests a graceful restart. Transfers run at startup before the library opens;
+progress appears in the console. The saved location is reused by a fresh unzip.
+
+If the restart request fails, the pending change stays saved. The panel offers
+**Restart to apply** and **Cancel scheduled change**. Cancellation is only possible
+before the transfer starts. An interrupted transfer resumes on restart; a missing
+drive or failed transfer shows an explanatory page instead of opening an empty
+library. Reconnect the drive or correct the reported problem and restart.
+
 | Control | What it does |
 |---|---|
 | Extracted Stems | Shows how many stem extractions, individual stems, and total disk space are stored, with a confirm-to-clear button that deletes all of them. |
@@ -129,3 +160,5 @@ Saving the Environment or AI Services tab only writes keys you changed; unmodifi
 - [Troubleshooting](../troubleshooting.md)
 - [Configuration](../../dev/config.md)
 - [Lyric Studio](lyric-studio.md)
+
+For upgrade, layout and recovery instructions, see [Data folder and upgrades](../data-folder.md).

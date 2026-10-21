@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CHECK = process.argv.includes('--check');
 const rel = (p) => path.relative(ROOT, p).replaceAll('\\', '/');
-const read = (p) => fs.readFileSync(p, 'utf8');
+const read = (p) => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 const exists = (p) => fs.existsSync(p);
 const walk = (dir, filter) =>
   exists(dir)
@@ -50,20 +50,23 @@ function fill(file, blocks) {
 }
 
 // ── Plugins ──────────────────────────────────────────────────────────────────
-// Each plugin declares one Lua table: solver = { name = "...", display = "...", ... }.
-function parsePlugin(file) {
+// Each plugin declares one Lua table, ending at its unindented closing brace.
+export function parsePlugin(file) {
   const src = read(file);
-  const m = src.match(/^(solver|scheduler|guidance|postprocess)\s*=\s*\{/m);
+  const m = src.match(/^(solver|scheduler|guidance|postprocess)\s*=\s*\{[\s\S]*?^\}/m);
   if (!m) return null;
-  const head = src.slice(m.index, m.index + 2500);
+  const head = m[0];
   const field = (k) => head.match(new RegExp(`^\\s*${k}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([\\w.-]+))`, 'm'))?.slice(1).find((x) => x !== undefined);
   const params = (head.match(/^\s*\{\s*key\s*=\s*"/gm) || []).length;
   return { type: m[1], file, name: field('name') ?? path.basename(file, '.lua'), display: field('display') ?? '', description: field('description') ?? '',
     nfe: field('nfe'), order: field('order'), stochastic: field('stochastic'), stateful: field('stateful'), params };
 }
+export const isSkippedPluginPath = (relPath) =>
+  /_INTERNAL/i.test(path.basename(relPath)) || /[\\/](archive|debug)[\\/]/i.test(relPath);
+
 function pluginTables() {
   const sources = [['engine/plugins', 'built in'], ['plugins', 'community']];
-  const all = sources.flatMap(([dir, origin]) => walk(path.join(ROOT, dir), (p) => p.endsWith('.lua')).map(parsePlugin).filter(Boolean).map((p) => ({ ...p, origin })));
+  const all = sources.flatMap(([dir, origin]) => walk(path.join(ROOT, dir), (p) => p.endsWith('.lua') && !isSkippedPluginPath(path.relative(ROOT, p))).map(parsePlugin).filter(Boolean).map((p) => ({ ...p, origin })));
   const by = (t) => all.filter((p) => p.type === t).sort((a, b) => a.display.localeCompare(b.display) || a.name.localeCompare(b.name));
   const params = (p) => (p.params ? `${p.params}` : '');
   return {
@@ -191,6 +194,7 @@ function assistantBlocks(plugins) {
   const troubleshooting = exists(path.join(ROOT, 'docs/user/troubleshooting.md')) ? read(path.join(ROOT, 'docs/user/troubleshooting.md')) : '';
   const backends = exists(path.join(ROOT, 'docs/user/backends.md')) ? read(path.join(ROOT, 'docs/user/backends.md')) : '';
   return {
+    'data-folder': read(path.join(ROOT, 'docs/user/data-folder.md')).trim().replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'),
     studios: studios.map(([name, para]) => `- **${name}**: ${para}`).join('\n'),
     backends: firstParagraph(backends),
     solvers: plugins.solvers, schedulers: plugins.schedulers, guidance: plugins.guidance,

@@ -1,3 +1,4 @@
+import { useStudioSongs } from '../../queries/studios/shared';
 // RepaintStudio.tsx — Main Repaint Studio orchestrator
 //
 // Composes: RepaintWaveform, RegionLyricsEditor, RepaintSettings
@@ -8,11 +9,12 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Upload, Loader2, X, Music, FolderOpen, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useGlobalParamsStore } from '../../context/GlobalParamsContext';
-import { songApi } from '../../services/api';
 import { submitStudioRender, followStudioRender } from '../../services/repaintLayerWorkflowApi';
-import { workflowApi } from '../../services/workflowApi';
+import { useUpload } from '../../queries/writes';
+import { studioWorkflowApi as workflowApi } from '../../queries/studios/workflows';
 import { useBackendStore } from '../../stores/backendStore';
-import { fetchLrc } from '../../utils/lrcUtils';
+import { useQuery } from '@tanstack/react-query';
+import { lyricsOptions } from '../../queries/studios/lyrics';
 import { RepaintWaveform } from './RepaintWaveform';
 import { RegionLyricsEditor } from './RegionLyricsEditor';
 import { RepaintSettings } from './RepaintSettings';
@@ -43,16 +45,31 @@ export const RepaintStudio: React.FC = () => {
   const gp = useGlobalParamsStore();
   const { disguiseArtist } = useDisguiseMode();
 
+  // Narrow-screen (<1024px) pane switcher — which of the two columns is visible
+  const [narrowPane, setNarrowPane] = useState<'source' | 'lyrics'>('source');
+
+  // Portrait-screen (>= 1024px, orientation portrait) — behaves like narrow
+  const [isPortrait, setIsPortrait] = useState(() =>
+    window.matchMedia('(orientation: portrait) and (min-width: 1024px)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(orientation: portrait) and (min-width: 1024px)');
+    const handler = (e: MediaQueryListEvent) => setIsPortrait(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
   // ── Source song state ──
   const [sourceSong, setSourceSong] = useState<Song | null>(() => restore('sourceSong', null));
   const [sourceAssetId, setSourceAssetId] = useState(() => restore<string>('sourceAssetId', ''));
   const [sourceAudioUrl, setSourceAudioUrl] = useState(() => restore<string>('sourceAudioUrl', ''));
   const [sourceName, setSourceName] = useState(() => restore<string>('sourceName', ''));
-  const [isUploading, setIsUploading] = useState(false);
+  const { mutate: uploadAudio, isPending: isUploading } = useUpload<{ audio_url: string; asset_id: string }>();
   const [duration, setDuration] = useState(0);
 
   // ── LRC state ──
-  const [lrcText, setLrcText] = useState<string | null>(null);
+  const lyricsQuery = useQuery(lyricsOptions(sourceAudioUrl));
+  const lrcText = lyricsQuery.data ?? null;
 
   // ── Region state ──
   const [regionStart, setRegionStart] = useState(() => restore<number>('regionStart', 0));
@@ -80,7 +97,8 @@ export const RepaintStudio: React.FC = () => {
   // ── Library picker ──
   const [showLibrary, setShowLibrary] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
-  const [librarySongs, setLibrarySongs] = useState<Song[]>([]);
+  const libraryQuery = useStudioSongs(showLibrary);
+  const librarySongs = libraryQuery.data?.songs ?? [];
 
   // ── Persist ──
   useEffect(() => { persist('sourceSong', sourceSong); }, [sourceSong]);
@@ -115,12 +133,13 @@ export const RepaintStudio: React.FC = () => {
     const id = localStorage.getItem('hs-repaint-workflowJob');
     if (!id || !token) return;
     let mounted = true;
+    const observation = new AbortController();
     setIsGenerating(true);
     setActiveJobId(id);
-    void followStudioRender(token, id, stage => { if (mounted) setGenStage(stage); })
+    void followStudioRender(id, stage => { if (mounted) setGenStage(stage); }, { signal: observation.signal })
       .then(async result => {
         if (!mounted) return;
-        const { job } = await workflowApi.get(token, id);
+        const { job } = await workflowApi.get(id);
         if (!mounted) return;
         const captured = job.input as { sourceName?: string; styleCaption?: string };
         const qId = addManualQueueItem({ title: captured.sourceName ? `${captured.sourceName} (Repaint)` : 'Repaint',
@@ -132,28 +151,13 @@ export const RepaintStudio: React.FC = () => {
         showToast('Repaint complete!');
       }).catch(err => { if (mounted) showToast(`Repaint ${String((err as Error).message)}`); })
       .finally(() => {
-        if (localStorage.getItem('hs-repaint-workflowJob') === id) localStorage.removeItem('hs-repaint-workflowJob');
+        if (mounted && localStorage.getItem('hs-repaint-workflowJob') === id) localStorage.removeItem('hs-repaint-workflowJob');
         if (mounted) { setIsGenerating(false); setActiveJobId(null); }
       });
-    return () => { mounted = false; };
+    return () => { mounted = false; observation.abort(); };
   }, [token]);
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 4000); };
-
-  // ── Load LRC when source audio changes ──
-  useEffect(() => {
-    if (!sourceAudioUrl) { setLrcText(null); return; }
-    fetchLrc(sourceAudioUrl).then(setLrcText);
-  }, [sourceAudioUrl]);
-
-  // ── Load library songs for picker ──
-  useEffect(() => {
-    if (showLibrary && token) {
-      songApi.list(token)
-        .then(({ songs }) => setLibrarySongs(songs))
-        .catch(() => {});
-    }
-  }, [showLibrary, token]);
 
   const filteredSongs = useMemo(() => {
     if (!librarySearch.trim()) return librarySongs;
@@ -179,28 +183,22 @@ export const RepaintStudio: React.FC = () => {
   }, []);
 
   // ── File upload ──
-  const handleFileUpload = useCallback(async (file: File) => {
+  const handleFileUpload = useCallback((file: File) => {
     if (!token) return;
-    setIsUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append('audio', file);
-      const res = await fetch('/api/upload/audio', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
-      if (!res.ok) throw new Error('Upload failed');
-      const { audio_url, asset_id } = await res.json();
-      setSourceAudioUrl(audio_url);
-      setSourceAssetId(asset_id);
-      setSourceName(file.name);
-      setSourceSong(null);
-      setRegionStart(0);
-      setRegionEnd(0);
-      showToast('Audio uploaded');
-    } catch (err: any) {
-      showToast(`Upload failed: ${err.message}`);
-    } finally {
-      setIsUploading(false);
-    }
-  }, [token]);
+    uploadAudio({
+      path: '/upload/audio',
+      files: [{ field: 'audio', file }],
+      onSuccess: ({ audio_url, asset_id }) => {
+        setSourceAudioUrl(audio_url);
+        setSourceAssetId(asset_id);
+        setSourceName(file.name);
+        setSourceSong(null);
+        setRegionStart(0);
+        setRegionEnd(0);
+        showToast('Audio uploaded');
+      },
+    });
+  }, [token, uploadAudio]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -216,7 +214,6 @@ export const RepaintStudio: React.FC = () => {
     setSourceName('');
     setLyrics('');
     setStyleCaption('');
-    setLrcText(null);
     setRegionStart(0);
     setRegionEnd(0);
     setDuration(0);
@@ -246,13 +243,13 @@ export const RepaintStudio: React.FC = () => {
     let submittedJobId: string | null = null;
     try {
       const engineParams = gp.getGlobalParams();
-      const { job } = await submitStudioRender(token, 'repaint-render', {
+      const { job } = await submitStudioRender('repaint-render', {
         source, expectedBackend: useBackendStore.getState().activeBackendId,
         engineParams, regionStart, regionEnd: effEnd, lyrics, styleCaption,
         sourceName, repaintMode: repaintMode as 'conservative' | 'balanced' | 'aggressive',
         crossfadeFrames,
       }, key);
-      if (submissionKeyRef.current !== key) { await workflowApi.cancel(token, job.id); return; }
+      if (submissionKeyRef.current !== key) { await workflowApi.cancel(job.id); return; }
       setActiveJobId(job.id);
       submittedJobId = job.id;
       localStorage.setItem('hs-repaint-workflowJob', job.id);
@@ -263,7 +260,7 @@ export const RepaintStudio: React.FC = () => {
         caption: styleCaption || String(engineParams.style || ''),
       });
       setQueueItemId(qId);
-      await followStudioRender(token, job.id, stage => setGenStage(stage)).then(result => {
+      await followStudioRender(job.id, stage => setGenStage(stage)).then(result => {
         setGenStage('Complete!');
         const audio = result.audio || {};
         completeManualQueueItem(qId, {
@@ -292,7 +289,7 @@ export const RepaintStudio: React.FC = () => {
 
   const handleCancel = async () => {
     submissionKeyRef.current = null;
-    if (activeJobId && token) { try { await workflowApi.cancel(token, activeJobId); } catch {} }
+    if (activeJobId && token) { try { await workflowApi.cancel(activeJobId); } catch {} }
     localStorage.removeItem('hs-repaint-workflowJob');
     if (queueItemId) failManualQueueItem(queueItemId, 'Cancelled by user');
     setIsGenerating(false);
@@ -308,6 +305,7 @@ export const RepaintStudio: React.FC = () => {
   return (
     <BackendCapabilityGate feature="repaint">
     <div className="flex flex-col w-full h-full bg-zinc-50 dark:bg-suno overflow-hidden">
+      {(lyricsQuery.error || libraryQuery.error) && <div role="alert" className="text-sm text-red-500">{(lyricsQuery.error || libraryQuery.error)?.message}</div>}
       {/* Toast */}
       <StudioDraftPicker control={draft} textKey="hs-repaint-sourceName" apply={applyDraft} />
       {toast && (
@@ -333,9 +331,27 @@ export const RepaintStudio: React.FC = () => {
         </div>
       )}
 
-      <div className="flex-1 flex overflow-hidden">
+      {/* Narrow/portrait pane switcher — rendered below 1024px and on portrait >= 1024px */}
+      <div className="max-[1023px]:flex min-[1024px]:hidden portrait-wide:flex flex-shrink-0 border-b border-zinc-200 dark:border-white/5">
+        {(['source', 'lyrics'] as const).map(pane => (
+          <button
+            key={pane}
+            type="button"
+            onClick={() => setNarrowPane(pane)}
+            className={`flex-1 py-2 text-xs font-semibold transition-colors ${
+              narrowPane === pane
+                ? 'text-pink-400 border-b-2 border-pink-400'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            {pane === 'source' ? 'Source' : 'Lyrics'}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* ── Left Panel: Source + Waveform ── */}
-        <div className="w-[360px] flex-shrink-0 flex flex-col border-r border-white/5 overflow-y-auto">
+        <div className={`flex-shrink-0 flex flex-col border-r border-white/5 overflow-y-auto ${!isPortrait ? 'min-[1024px]:w-[360px] min-[1024px]:flex' : ''} ${narrowPane === 'source' ? 'flex w-full min-w-0' : 'hidden'}`}>
           {/* Source selector */}
           <div className="p-4 border-b border-white/5">
             <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
@@ -473,7 +489,7 @@ export const RepaintStudio: React.FC = () => {
         </div>
 
         {/* ── Center: Lyrics Editor ── */}
-        <div className="flex-1 flex flex-col overflow-hidden border-r border-white/5">
+        <div className={`flex-col overflow-hidden border-r border-white/5 flex-1 min-w-0 ${!isPortrait ? 'min-[1024px]:flex' : ''} ${narrowPane === 'lyrics' ? 'flex' : 'hidden'}`}>
           <RegionLyricsEditor
             lrcText={lrcText}
             fallbackLyrics={lyrics}

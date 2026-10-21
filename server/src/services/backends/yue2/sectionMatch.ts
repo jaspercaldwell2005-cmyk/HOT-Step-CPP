@@ -148,21 +148,25 @@ function bestFit(blocks: Block[], timed: Array<number | null>, spans: Span[], so
   return sections;
 }
 
-export function matchSectionsToScore(abc: string, lyrics: string, words: Yue2AlignWord[]): SectionMatchResult {
+/** Each score section's label, start second and whether the Vocal sings in it. */
+function scoreSpans(abc: string) {
   const sections = scoreSections(abc);
   if (!sections.length) throw new Error('The score has no section labels.');
   const bars = scoreBarClock(abc);
   const onsets = scoreVocalNoteOnsets(abc, bars);
-  const spans = sections.map((section, i) => {
+  const spans: Span[] = sections.map((section, i) => {
     const endBar = i + 1 < sections.length ? sections[i + 1].startBar - 1 : bars.length;
     const firstSungBar = endBar > section.startBar ? section.startBar : section.startBar - 1;
     return { label: section.label.trim(), start: bars[section.startBar - 1]?.start ?? 0,
       sung: onsets.slice(firstSungBar, endBar).some(onset => onset !== null) };
   });
-  const barSeconds = bars[0].end - bars[0].start;
+  return { spans, bars, barSeconds: bars[0].end - bars[0].start, songEnd: bars[bars.length - 1].end };
+}
+
+export function matchSectionsToScore(abc: string, lyrics: string, words: Yue2AlignWord[]): SectionMatchResult {
+  const { spans, barSeconds, songEnd } = scoreSpans(abc);
   const blocks = splitLyricBlocks(lyrics);
   const label = (i: number) => spans[i].label;
-  const songEnd = bars[bars.length - 1].end;
   // Index of the section a time falls in.
   const containing = (seconds: number) => {
     let found = 0;
@@ -319,6 +323,17 @@ export function planScoreFromLyrics(abc: string, lyrics: string, words: Yue2Alig
     if (next && next.bar - section.startBar < 1) return false;
     return !after || (after.lastBar !== null && section.startBar > after.lastBar);
   });
+  // A kept marker right before a sung block of the same label is that block's
+  // own section (an intro marked at bar 1, sung from bar 5): one section.
+  for (const o of opened) {
+    const before = [...kept.map(k => k.startBar), ...opened.filter(x => x !== o).map(x => x.bar)]
+      .filter(bar => bar < o.bar).sort((a, b) => a - b).at(-1);
+    const i = kept.findIndex(k => k.startBar === before);
+    if (i >= 0 && kept[i].label.trim().toLowerCase() === o.label.toLowerCase()) {
+      o.bar = kept[i].startBar;
+      kept.splice(i, 1);
+    }
+  }
   const sections: Array<ScorePlanSection & { body?: string[] }> = [
     ...kept.map(section => ({ label: section.label.trim(), bar: section.startBar, block: null })),
     ...opened.map(o => ({ label: o.label, bar: o.bar, block: o.block, body: o.body })),
@@ -328,4 +343,103 @@ export function planScoreFromLyrics(abc: string, lyrics: string, words: Yue2Alig
     sections.every((s, i) => s.label === original[i].label.trim() && s.bar === original[i].startBar);
   return { sections: sections.map(({ body: _body, ...s }) => s), lyrics: text, unsure,
     unchanged: same && text === lyrics.replace(/\r\n?/g, '\n').trim() };
+}
+
+// ── Suggestions for a Prepare document ──
+// Proposals only: section id -> block ids, 'instrumental', or a reuse of a
+// block already placed. The score and the words are never changed; the client
+// applies each proposal as an ordinary lyric edit the user can undo.
+
+export interface SuggestBlock { id: string; tag: string | null; text: string }
+
+export interface SectionSuggestions {
+  /** Section id -> the blocks sung there in order, or 'instrumental'. */
+  assignments: Record<string, string[] | 'instrumental'>;
+  /** Sections that sing a copy of a block placed elsewhere ("reuse for Chorus 2 and 3"). */
+  reuse: Array<{ sectionId: string; blockId: string }>;
+  /** Sections whose proposal rests on a guess: untagged words, a tag the recording overrode, or blocks merged. */
+  uncertain: string[];
+  /** Blocks with no safe place; they stay unassigned for the user. */
+  unplaced: string[];
+  recording: boolean;
+}
+
+const KNOWN_KINDS = /^(verse|chorus|bridge|intro|outro|interlude|pre-chorus|solo|instrumental|break)$/;
+const kindOf = (label: string) => {
+  const kind = sectionKind(label);
+  return REPEATS.test(kind) ? 'chorus' : KNOWN_KINDS.test(kind) ? kind : null;
+};
+
+/** The lyrics to align for these blocks: one tag line per block id, so the
+ *  aligned words map back to blocks by position. */
+export const suggestionLyrics = (blocks: SuggestBlock[]) => blocks.map(b => `[${b.id}]\n${b.text}`).join('\n\n');
+
+export function suggestSections(abc: string, sectionIds: string[], blocks: SuggestBlock[], words?: Yue2AlignWord[]): SectionSuggestions {
+  const { spans, barSeconds, songEnd } = scoreSpans(abc);
+  if (spans.length !== sectionIds.length) throw new Error('The section ids do not match the score\'s sections.');
+  let placed: Array<number | null>;
+  let recording = false;
+  const split = words && splitLyricBlocks(suggestionLyrics(blocks));
+  // By tag kind, in order: the first section after the last placed one of
+  // that kind. Untagged words take the next section that is sung.
+  const byTag = (idx: number[]) => {
+    let cursor = -1;
+    return idx.map(i => {
+      const kind = blocks[i].tag ? kindOf(blocks[i].tag!) : null;
+      const found = spans.findIndex((span, s) => s > cursor && (kind ? kindOf(span.label) === kind : span.sung));
+      if (found >= 0) cursor = found;
+      return found >= 0 ? found : null;
+    });
+  };
+  const all = blocks.map((_, i) => i);
+  if (words && split && split.length === blocks.length) {
+    recording = true;
+    // Empty tags carry no words to align: they place by tag, apart from the recording.
+    const worded = all.filter(i => blocks[i].text.trim()), empty = all.filter(i => !blocks[i].text.trim());
+    const hints = worded.map(i => ({ ...split[i], tag: blocks[i].tag }));
+    const timed = hints.map(h => firstWord(h, words));
+    placed = blocks.map(() => null);
+    bestFit(hints, timed, spans, songEnd, PICKUP_BARS * barSeconds).forEach((s, k) => { placed[worded[k]] = s; });
+    // An empty tag takes the first free section of its kind after the blocks before it.
+    for (const i of empty) {
+      const kind = blocks[i].tag ? kindOf(blocks[i].tag!) : null;
+      const cursor = Math.max(-1, ...placed.slice(0, i).map(s => s ?? -1));
+      const taken = new Set(placed);
+      const found = spans.findIndex((span, s) => s > cursor && !taken.has(s) && (kind ? kindOf(span.label) === kind : span.sung));
+      placed[i] = found >= 0 ? found : null;
+    }
+  } else {
+    placed = byTag(all);
+  }
+
+  const assignments: SectionSuggestions['assignments'] = {};
+  const uncertain = new Set<string>();
+  const unplaced: string[] = [];
+  const chorusBlocks: Array<{ s: number; id: string }> = [];  // chorus-type blocks placed, in order
+  blocks.forEach((block, i) => {
+    const s = placed[i];
+    if (s === null) { unplaced.push(block.id); return; }
+    const id = sectionIds[s];
+    const own = block.tag ? kindOf(block.tag) : null;
+    if (!block.text.trim()) { if (!assignments[id]) assignments[id] = 'instrumental'; return; }
+    const have = assignments[id];
+    assignments[id] = Array.isArray(have) ? [...have, block.id] : [block.id];
+    if (Array.isArray(have) || !own || own !== kindOf(spans[s].label)) uncertain.add(id);
+    if (kindOf(spans[s].label) === 'chorus') chorusBlocks.push({ s, id: block.id });
+  });
+
+  const reuse: SectionSuggestions['reuse'] = [];
+  // An unplaced chorus or untagged block may belong to a chorus section: no reuse then.
+  const chorusMayBelong = unplaced.some(id => { const t = blocks.find(b => b.id === id)!.tag; return !t || kindOf(t) === 'chorus'; });
+  spans.forEach((span, s) => {
+    const id = sectionIds[s];
+    if (assignments[id]) return;
+    if (!span.sung) { assignments[id] = 'instrumental'; return; }
+    // Nearest earlier chorus-type block, else the first later one.
+    if (kindOf(span.label) === 'chorus' && chorusBlocks.length && !chorusMayBelong) {
+      const source = [...chorusBlocks].reverse().find(c => c.s < s) ?? chorusBlocks[0];
+      reuse.push({ sectionId: id, blockId: source.id });
+    }
+  });
+  return { assignments, reuse, uncertain: [...uncertain], unplaced, recording };
 }

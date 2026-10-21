@@ -1,11 +1,13 @@
 #pragma once
 
-// BF16 activation storage (YUE2_AITK_BF16_STORAGE=1). The block graph is built
-// and differentiated exactly as before, in F32. This pass then stores every
-// BF16_ROUND output as BF16, along with the views and conts that only reread
-// it. Every other node keeps its F32 output, so each op does the same F32
-// maths on the same values; only the bytes it reads shrink. Gradient sums stay
-// F32 because ADD/ACC outputs are never retyped.
+// BF16 activation storage (on by default on CUDA, the only backend with the
+// BF16-source kernels, except in strict F32, the reference;
+// YUE2_AITK_BF16_STORAGE=0 is the rollback). The block
+// graph is built and differentiated exactly as before, in F32. This pass then
+// stores every BF16_ROUND output as BF16, along with the views and conts that
+// only reread it. Every other node keeps its F32 output, so each op does the
+// same F32 maths on the same values; only the bytes it reads shrink. Gradient
+// sums stay F32 because ADD/ACC outputs are never retyped.
 //
 // Construction-time byte metadata (nb, view offsets) follows each retyped
 // tensor's element size. Tensors read back or handed on as F32 (block output,
@@ -21,13 +23,27 @@
 namespace yue2_aitk_bf16_storage {
 
 inline bool enabled() {
-    static const bool on = [] { const char * v = std::getenv("YUE2_AITK_BF16_STORAGE"); return v && *v && *v != '0'; }();
+    static const bool on = [] { const char * v = std::getenv("YUE2_AITK_BF16_STORAGE"); return !(v && *v == '0'); }();
     return on;
 }
 
 // YUE2_AITK_BF16_DEFER=0 retypes deferrable rounds too (for A/B timing).
 inline bool defer_rounds() {
     static const bool on = [] { const char * v = std::getenv("YUE2_AITK_BF16_DEFER"); return !(v && *v == '0'); }();
+    return on;
+}
+
+// CUDA writes a BF16 GEMM's result straight into its BF16 round store, so such
+// a round is stored rather than deferred. GGML_CUDA_NO_GEMM_BF16_STORE=1 turns
+// both off.
+inline bool gemm_store() {
+    static const bool on = std::getenv("GGML_CUDA_NO_GEMM_BF16_STORE") == nullptr;
+    return on;
+}
+
+// YUE2_AITK_ATTENTION_COPY=1 keeps flash attention's BF16 q/k/v copies.
+inline bool attention_views() {
+    static const bool on = std::getenv("YUE2_AITK_ATTENTION_COPY") == nullptr;
     return on;
 }
 
@@ -53,6 +69,8 @@ inline bool reads_bf16(const ggml_tensor * reader, int idx) {
         case GGML_OP_ACC: case GGML_OP_OUT_PROD: case GGML_OP_CPY: case GGML_OP_CONT: case GGML_OP_DUP:
             return true;
         case GGML_OP_REPEAT: return idx == 0;
+        // The trainer's RoPE is plain NeoX, which CUDA reads from BF16.
+        case GGML_OP_ROPE: return idx == 0;
         case GGML_OP_SET: return idx == 1;
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(reader)) {
@@ -100,6 +118,7 @@ inline int apply(ggml_cgraph * graph, const std::vector<const ggml_tensor *> & k
     auto deferrable = [&](const ggml_tensor * r) {
         const ggml_tensor * x = r->src[0];
         if (x->view_src || x->op == GGML_OP_NONE || x->op == GGML_OP_ADD || x->op == GGML_OP_SUB || x->op == GGML_OP_MUL) return false;
+        if (gemm_store() && x->op == GGML_OP_MUL_MAT && x->src[0]->type == GGML_TYPE_BF16 && x->op_params[0] != GGML_PREC_F32) return false;
         if (uses[x] != 1 || uses[r] != 1) return false;
         const ggml_tensor * u = reader[r];
         return u->op == GGML_OP_ADD || u->op == GGML_OP_SUB || u->op == GGML_OP_MUL;
@@ -126,6 +145,32 @@ inline int apply(ggml_cgraph * graph, const std::vector<const ggml_tensor *> & k
         retype(t, GGML_TYPE_BF16);
         if (!t->view_src) bf16.insert(t);
         ++changed;
+    }
+    // A cast of a now-BF16 tensor into BF16 that only flash attention reads
+    // is the same bytes in another layout, and the BF16 attention kernels
+    // take strided q/k/v: make it a view instead of a copy.
+    if (attention_views()) {
+        std::unordered_set<const ggml_tensor *> other_reader;
+        for (int i = 0; i < n; ++i) {
+            const ggml_tensor * t = ggml_graph_node(graph, i);
+            if (t->op == GGML_OP_FLASH_ATTN_TRAIN || t->op == GGML_OP_FLASH_ATTN_TRAIN_BACK) continue;
+            for (int j = 0; j < GGML_MAX_SRC; ++j) if (t->src[j] && t->src[j] != t) other_reader.insert(t->src[j]);
+        }
+        for (int i = 0; i < n; ++i) {
+            ggml_tensor * t = ggml_graph_node(graph, i);
+            ggml_tensor * s = t->src[0];
+            if (t->op != GGML_OP_CPY || t->src[1] != t || t->type != GGML_TYPE_BF16 || !s || s->type != GGML_TYPE_BF16 ||
+                !uses.count(t) || other_reader.count(t) || (t->flags & GGML_TENSOR_FLAG_OUTPUT) || t->view_src ||
+                !ggml_are_same_shape(t, s) || s->nb[0] != ggml_type_size(GGML_TYPE_BF16)) continue;
+            const size_t offset = s->view_offs;
+            t->op = GGML_OP_VIEW;
+            t->src[1] = nullptr;
+            t->view_src = const_cast<ggml_tensor *>(owner(s));
+            t->view_offs = offset;
+            std::memcpy(t->op_params, &offset, sizeof(offset));
+            for (int k = 0; k < GGML_MAX_DIMS; ++k) t->nb[k] = s->nb[k];
+            ++changed;
+        }
     }
     return changed;
 }

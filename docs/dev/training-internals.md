@@ -1,12 +1,16 @@
 # Training System — Architecture & Continuation Guide
 
+Resolve runtime paths first using the [data folder configuration](config.md#dev-checkouts).
+`<data root>/...` paths below describe the managed layout; environment overrides
+can place individual children elsewhere.
+
 *The complete map of HOT-Step's native training system (Training Studio). Written as the handoff/continuation doc: everything an agent or contributor needs to keep working on this subsystem in a fresh session. Built 2026-07-27/28; all measurements from an RTX 5090 (32 GB, sm_120).*
 
 ## YuE2 joint training
 
-The opt-in `fixed-recipe` method uses the bf16 LM base, rank-32 LoRA at the native four fused sites, one song per update, whole-song AR, a 1,500-frame NAR crop, CE weight 0.5 and KL weight 0.2. It uses AdamW through LmOptim with epsilon 1e-6, constant LR, an AR LR multiplier of 0.5, no condition dropout or lyric timing, and a cache cut with loudness off. The server forces these values even if a saved form contains other values. Its runner omits `--nar-drift` and retains the installed v9 companion decoder.
+The opt-in `fixed-recipe` method defaults to the bf16 LM base (the request's `base` is kept when set, and the standalone prepare route takes the same `base`), rank-64 LoRA (alpha 64) at the native four fused sites, one song per update, whole-song AR, a 1,500-frame NAR crop, CE weight 0.5 and KL weight 0.2. It uses AdamW through LmOptim with epsilon 1e-6, constant LR, an AR LR multiplier of 0.5, no condition dropout or lyric timing. Like every method it trains on a -14 LUFS cache, but nothing refuses another level. The server forces these values, apart from the base, even if a saved form contains other values. Its runner omits `--nar-drift` and retains the installed v9 companion decoder.
 
-The method's preparation mode cleans lyric cues and unsupported section headings, then applies its caption parser and NFC normalization. It writes an isolated prepared-dataset cache index and marks the output manifest with `caption_grammar: fixed-recipe` and `loudness_lufs: 0`; the start path rejects a manifest without both markers. Caption cleanup uses a temporary copy of the legacy manifest, leaving the old method cache index alone.
+The method's preparation mode removes lyric cues, keeps unsupported section headings in Title case, then applies its caption parser and NFC normalization. The style starts with the bare trigger word, or the dataset slug when no trigger is set, without duplicating an existing prefix. Native trigger injection stays off to avoid its "in the style of" wrapper. Preparation writes an isolated prepared-dataset cache index and marks the output manifest with `caption_grammar: fixed-recipe-v2`; the start path rejects a manifest without it. Older prepared datasets are automatically re-prepared on the next automatic preparation. Caption cleanup uses a temporary copy of the legacy manifest, leaving the old method cache index alone.
 
 The joint run index reconciles with the configured `yue2-joint-adapters` folder at startup and when its folder set changes. Missing finished runs leave the index. Copied folders enter from `run.json`, or from a unique dataset trigger in the folder name for older runs. Every index write also saves the current record in the run folder; an unavailable adapters root leaves the index alone.
 
@@ -74,7 +78,15 @@ fused `FLASH_ATTN_TRAIN` ops where the backend has them (CUDA, CPU, Vulkan via
 (`YUE2_AITK_MATH_ATTENTION=1` forces it, for diagnosis). Exact attention keeps
 `[keys, S, heads]` probabilities per layer, which rules out whole songs, and on
 Vulkan it produced non-finite values in the AR forward (not root-caused; the
-fused path does not). ConvRot needs CUDA: `CONVROT8` has no other kernel. The dataset must
+fused path does not). On Metal the backward recompute copies each layer's
+attention O+LSE kept from the adapted forward instead of running the attention
+forward again (`keep_attention` in `yue2-aitk-stack.h`; about 63 MB a layer at
+S = 7,668). It is kept only if the device still has
+`YUE2_AITK_ATTENTION_RESERVE_MB` (default 16384, above the largest measured
+step footprint) free on top, otherwise the
+trainer warns and recomputes, and it is freed as that backward returns.
+`YUE2_AITK_ATTENTION_RECOMPUTE=1` restores the recompute; CUDA, CPU and Vulkan
+always recompute. ConvRot needs CUDA: `CONVROT8` has no other kernel. The dataset must
 use the joint trainer's schema-1 manifest, including matching model and source
 hashes. Existing Legacy caches cannot be passed directly. Output must be a new
 directory. Each `checkpoint-stepN` contains the combined
@@ -144,11 +156,16 @@ request), text-dropped `[Tags]\n\n` (by symmetry, unpublished), unconditional = 
 instruction with no headers (`protocol.py` `negative_prefix`; its off form has no ABC bracket,
 so the suffix opens with MUSIC_START). `ace-train yue2-batch-check` is a CPU self-check of these
 layouts and of `--ar-targets base`. Loudness: `yue2-preprocess --loudness-lufs` (0 = off) is now
-passed by the server (`loudnessLufs` on the cache route); `yue2LoudnessForMethod` gives -14 for
-tuned and 0 for base-matched, and the batch chain's cache stage re-cuts a dataset at the other
-level (the target is part of the latent key, so the manifest is rewritten and codes/sheet/align
-run again). The manifest always carries `loudness_target_lufs` now, 0 included, so an off cache
-is not mistaken for a pre-normalisation one. Not matched: the report's two no-semantic-token
+passed by the server (`loudnessLufs` on the cache route, `YUE2_CACHE_LUFS` = -14 when the body omits it).
+Every method trains at -14 since 2026-10-16. The batch chain's cache stage, and the single-dataset
+preparation pipeline when it carries a joint stage (`cacheLufs` in `yue2PreparationPipeline.ts`),
+re-cut a dataset at any other level (the target is part of the latent key, so the manifest is
+rewritten and codes/sheet/align run again). No start path checks the cache's loudness; a direct Start trains on the cache as cut. The manifest always carries `loudness_target_lufs` now, 0 included, so an off cache
+is not mistaken for a pre-normalisation one. Overs are peak-scaled, not clamped: a clip whose
+sample peak passes 1.0 is scaled as a whole to -0.3 dBFS (`yue2_peak_scale` in `yue2-loudness.h`),
+at preprocess before encoding (the gain is folded into the recorded `loudness_gain_db`, which is now
+written for off caches too) and after the VAE decode, which overshoots loud material by about 4 dB.
+Clips at or under 1.0 are untouched. Not matched: the report's two no-semantic-token
 tasks (no published layout; our inference never runs them) and its flow-time distribution
 (unstated).
 
@@ -170,6 +187,8 @@ It reuses the vocal-stem and forced-alignment stages; turning the option off
 skips those optional stages and the cursor objective. The timing weight is
 configurable and recorded with the run. Existing Legacy controls and its
 separate AR/NAR workflow are unchanged.
+
+Checkpoint previews select the AR adapter at `preview.arScale`, default 0.6, and the NAR adapter at 1.0. The joint form and batch ladder defaults carry the same AR scale. Manual renders accept `arScale`, falling back to the run's saved preview scale and then 0.6. Baseline previews select no adapters.
 
 Checkpoint previews are optional and disabled by default. They use the first
 eligible dataset track with a fixed default seed of 424242. Preview duration is
@@ -197,6 +216,30 @@ ace-train yue2-prepare-aitk --legacy-manifest yue2_preprocess.json --checkpoint 
 Preparation validates geometry, payloads and captions, records model hashes,
 and publishes a new manifest without changing the source cache. For caches
 prepared by other YuE2 training tools, use `yue2-import-aitk-cache --help`.
+
+`yue2-prepare-aitk --caption-dropout-trigger <text>` sets each item's dropout
+style to exactly `<text>`, with no "in the style of" wrapper. It accepts one
+line of at most 128 bytes and rejects CR, LF and NUL. Without this flag,
+dropout uses the bare `--trigger` value, or an empty style if there is no trigger.
+The Legacy `--trigger` injection still wraps non-empty full captions as before;
+the dropout style does not use that wrapper. Lyrics and sheet conditioning stay
+the same when caption dropout fires.
+
+Set this flag during preparation, where the trigger-only prefixes are tokenized.
+`yue2-joint-train --caption-dropout <p>` selects those prepared prefixes with
+probability `p`; the trainer does not accept `--caption-dropout-trigger`.
+HOT-Approved, the Fixed recipe preset, passes the trigger or, when none is set,
+the dataset slug. Re-prepare datasets made before this change to populate those
+prefixes correctly. The server invalidates the old Fixed recipe preparation
+cache and re-prepares it automatically.
+
+The prepared manifest's `trigger` and `style_template` (`upstream` or `bare`)
+pass through to every native AR/NAR export, along with a trigger-prefixed file
+name. Fixed recipe captions already open with the trigger, so after preparation
+the server stamps `trigger` and `style_template: bare` into the manifest. A
+Fixed recipe cache without that stamp counts as stale and is re-prepared.
+Exports from older Fixed recipe runs carry neither field; the adapter catalogue
+recovers the trigger from the run's prepared styles instead.
 
 The synthetic native resume check reproduces uninterrupted training exactly.
 Real full-song updates and native adapter merging have passed. Native and Torch
@@ -374,6 +417,56 @@ archived loss log, rewrites each record from the disk scan (dropping the pull's
 per-checkpoint fields), and removes the empty `_remote` tree. It is idempotent.
 `startYue2Mirror()` awaits it before the first pass, so no pass writes into a folder about
 to move. The first mirror pass then fills in the rung weights the worker still holds.
+
+## YuE2 NAR audio-domain loss
+
+`ace-train yue2-nar-train --audio-loss <w>` adds `w * aux` to the flow MSE on steps
+whose `t <= --audio-tmax` (default 0.4). The clean-latent estimate
+`x0_hat = x_t - t * v_pred` is decoded through the frozen VAE over `--audio-frames`
+(150) frames plus `--audio-margin` (25) each side, at a random place in the clip,
+and the scored span is compared with the source recording. `aux` is the
+`spec_loss` of the joint_v6 trainer that produced the companion adapter: L1 of
+log-mel (128 HTK mels over |STFT 2048|), plus 0.5 times the multi-resolution STFT
+(spectral convergence and log-magnitude L1 at 512, 1024 and 2048, hop N/4), plus 0.5
+times the difference in side-to-mid energy, all on mono except the width term.
+Frames are not centre-padded and the mel hop is 512, not 480.
+
+The reference is the source decoded the way `yue2-preprocess` decoded it (WAV/MP3
+natively, anything else through `--ffmpeg`) and scaled by the source's
+`loudness_gain_db`, which is the audio the latents were encoded from. A manifest
+without that field is refused. Whole tracks are cached LRU. Once per run the trainer
+decodes the first scored clip's clean latents and reports the lag of best
+correlation against the reference; it should be 0.
+
+The inference decoder (`yue2-vae-graph.h`) cannot be backpropagated on CUDA:
+`IM2COL`'s backward has no CUDA kernel and `PAD` has no backward. So
+`train/yue2-nar-audio-loss.h` rebuilds the decoder in `[C, T]` layout from ops that
+do: a k-tap conv is k matmuls over shifted contiguous views, padding and the
+transposed conv's overlap-add are `ACC` onto a persistent zero canvas. STFT frames at
+hop N/4 split into four non-overlapping sets, each a contiguous view, so one frame
+set is one matmul against a windowed DFT basis.
+
+`--fd-check --audio-loss 1` checks the rebuilt decoder against `yue2_vae_decode`
+(1e-6 relative), self-tests the decoder and the spectral loss separately, probes
+`d(aux)/d(x0_hat)`, then runs the usual LoRA probes on the audio term alone. Pass
+`--manifest` so it uses a real clip and its audio: on N(0,1) latents the decoder is
+so rough that a central difference only turns linear at steps near 1e-6 of the
+input. Even on real latents the decoder needs steps under ~1e-5 of the input, so the
+audio gradient is correct but very local.
+
+Cost at the defaults: about 5.5 GB more VRAM and 0.22 s/it against 0.18 for the
+flow-only pilot (rank 128, 10 s clips). Near-silent references (hidden tracks,
+gaps) push `aux` to 12-18 against ~1 elsewhere, through the log terms; the global
+clip bounds the step.
+
+Pilot result (HOTSTEP-353, 2026-10-18): the broad pilot rerun with `--audio-loss 2`,
+same data, seed and draws, benched on 20 held-out tracks. Against the flow-only
+pilot's final checkpoint it held the vocal envelope (+0.027, 20/20 tracks) and the
+top two bands (+2.3 dB, closer to the source), but narrowed the bass less (+1.4 dB
+side level, 16/20). It did not beat the flow-only step-3000 checkpoint, and its
+vocal envelope stayed at the companion-only baseline. Its checkpoints varied less
+from one to the next than the flow-only ones did. On the bench alone it does not earn
+a place in the full broad run at this weight; the listening test decides.
 
 ## MiniMax-Music3 (MM3) LM adapters
 
@@ -737,7 +830,7 @@ slices to the standard V4 GGUF).
 ## Key design facts (the ones that bite)
 
 **Data & labeling**
-- Sidecars (`<stem>.txt`) live **next to the audio**; `dataset.json` in the source folder — Side-Step-compatible on purpose. Studio-private state (audio_codes, provenance, raw analyzer results) lives in `server/data/training/datasets/<slug>/labels/`.
+- Sidecars (`<stem>.txt`) live **next to the audio**; `dataset.json` in the source folder — Side-Step-compatible on purpose. Studio-private state (audio_codes, provenance, raw analyzer results) lives in `<data root>/library/training/datasets/<slug>/labels/`.
 - Labeling is engine-free: Essentia (BPM/key, cached by size+mtime) ∥ Genius lyrics (relaxed collab matching — "Electric Callboy & BABYMETAL" broke exact primary-artist equality) → Gemini captions **with the audio attached** (96 kbps MP3 inline; the local caption is *omitted* from the prompt to avoid anchoring). `ace-understand` is out of the default flow (weak captions, hallucinated lyrics, J-pop prior); still reachable via API `useUnderstand:true`.
 - Optional `essentiaTempo.minTempo/maxTempo` values become `rhythm` keys in the extractor's YAML profile; no bounds means no profile and Essentia's defaults. The label cache also keys on these bounds. An embedded BPM tag replaces Essentia's estimate only when it is a half or double tempo match (within 2 BPM); without such a match, the Essentia value is kept. The Review grid's ½ and 2× buttons save a manual BPM correction before dataset build.
 - Dataset language is **declared, not detected** (`default_language`, forced-write on every label pass).
@@ -877,7 +970,7 @@ Usage (4B, low-VRAM by default):
 
 ```
 ace-train train-lm --stages train,export ^
-  --codes  server\data\training\tensors\president\<variant>\lm_codes.jsonl ^
+  --codes  <data root>/library\training\tensors\president\<variant>\lm_codes.jsonl ^
   --out    <run dir> --models models --lm acestep-5Hz-lm-4B-BF16.gguf ^
   --caption-dropout 0.25 ^
   --reg-every 3 --reg-codes <other artist>\lm_codes.jsonl,<another>\lm_codes.jsonl ^
@@ -1031,3 +1124,7 @@ All are `train-dit --adapter-type lora` variants (rsLoRA and LoRA+ also in `trai
 ## Where the deep documents live
 
 `docs/plans/` is **gitignored (local-only)** — on the maintainer's machine the full design/implementation plans exist: `2026-07-27-training-studio-design.md` (master design), `-dataset-studio-implementation.md`, `-preprocess-implementation.md`, `-lm-trainer-implementation.md`, `2026-07-28-lm-4b-training.md`, `-dit-trainer-implementation.md`, `-lm-speed-levers.md`, `-codes-preview.md`. Each contains the frozen contracts and verification ladders. The commit history (`git log --oneline --grep=training`) carries the measured numbers per milestone.
+
+## Release data paths
+
+Release defaults place training under `<data folder>/library/training`. The server supplies absolute child paths; moves rewrite persisted dataset and checkpoint paths inside transferred folders after a database backup. External paths stay unchanged. See [Data folder and upgrades](../user/data-folder.md).

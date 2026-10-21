@@ -3,11 +3,12 @@ import test from 'node:test';
 import { applyFixedRecipe, buildYue2JointTrainArgs, parseYue2JointEvent, parseYue2JointStopMode, reconKeepDecision } from './yue2JointTrainRunner.js';
 
 test('Fixed recipe forces its recipe and retains the companion decoder', () => {
-  const recipe = applyFixedRecipe({ method: 'fixed-recipe', rank: 64, alpha: 256, adapterType: 'lokr',
+  const recipe = applyFixedRecipe({ method: 'fixed-recipe', rank: 16, alpha: 256, adapterType: 'lokr',
     optimizer: 'prodigy', gradAccum: 8, arCropFrames: 500, narCropFrames: 0,
-    lrSchedule: 'wsd', lyricTiming: true, cursorWeight: 0.08, klWeight: 0 });
-  assert.equal(recipe.rank, 32);
-  assert.equal(recipe.alpha, 32);
+    lrSchedule: 'wsd', lyricTiming: true, cursorWeight: 0.08, klWeight: 0,
+    abcDropout: 1, captionDropout: 0, textDropout: 0.1, lyricDropout: 0.1, bothDropout: 0.1 });
+  assert.equal(recipe.rank, 64);
+  assert.equal(recipe.alpha, 64);
   assert.equal(recipe.adapterType, 'lora');
   assert.equal(recipe.optimizer, 'adamw-lm');
   assert.equal(recipe.gradAccum, 1);
@@ -22,11 +23,19 @@ test('Fixed recipe forces its recipe and retains the companion decoder', () => {
   assert.equal(recipe.beta2, 0.999);
   assert.equal(recipe.lr, 1e-4);
   assert.equal(recipe.plannerLrScale, 0.5);
-  assert.equal(recipe.abcDropout, 1);
+  assert.equal(recipe.abcDropout, 0.5);
+  assert.equal(recipe.captionDropout, 0.5);
+  assert.deepEqual([recipe.textDropout, recipe.lyricDropout, recipe.bothDropout], [0, 0, 0]);
+  assert.deepEqual([recipe.steps, recipe.seed, recipe.saveEvery], [1500, 42, 200]);
   assert.equal(recipe.arTargets, 'tuned');
+  assert.equal(recipe.base, 'bf16');
+  assert.equal(applyFixedRecipe({ method: 'fixed-recipe', base: 'Q4_K_M' }).base, 'Q4_K_M');
   const base = { checkpoint: 'base.gguf', dataset: 'dataset.json', outDir: 'run',
     steps: 100, saveEvery: 10, seed: 3, device: 'CUDA0', companion: 'nar-v9.safetensors' };
-  const parity = buildYue2JointTrainArgs({ ...base, method: 'fixed-recipe' });
+  const parity = buildYue2JointTrainArgs({ ...base, ...recipe, method: 'fixed-recipe' });
+  assert.deepEqual(parity.slice(parity.indexOf('--abc-dropout'), parity.indexOf('--abc-dropout') + 4),
+    ['--abc-dropout', '0.5', '--caption-dropout', '0.5']);
+  for (const flag of ['--text-dropout', '--lyric-dropout', '--both-dropout', '--trigger']) assert.equal(parity.includes(flag), false);
   assert.equal(parity.includes('--nar-drift'), false);
   assert.deepEqual(parity.slice(parity.indexOf('--adam-eps'), parity.indexOf('--adam-eps') + 2), ['--adam-eps', '1e-6']);
   assert.deepEqual(parity.slice(-2), ['--companion', 'nar-v9.safetensors']);
@@ -47,7 +56,7 @@ test('joint stop mode accepts the explicit step count sent by the UI', () => {
 test('AITK native joint JSON event maps to the server metric contract', () => {
   assert.deepEqual(parseYue2JointEvent(
     '{"stage":"joint","step":7,"ar_ce":1.2,"ar_kl":0.3,"nar_mse":0.004,"gradient_norm":2.5}', 100),
-    { stage: 'joint', step: 7, loss: 1.264, arKl: 0.3, narMse: 0.004, gradNorm: 2.5, totalSteps: 100 });
+    { stage: 'joint', step: 7, loss: 1.264, arCe: 1.2, arKl: 0.3, narMse: 0.004, gradNorm: 2.5, totalSteps: 100 });
 });
 
 test('AITK native joint JSON forwards the measured step duration', () => {

@@ -6,6 +6,7 @@
 
 #include "yue2-aitk-graph.h"
 #include "yue2-aitk-host-profile.h"
+#include "yue2-aitk-backend.h"
 #include "yue2-aitk-bf16-storage.h"
 
 #include <cmath>
@@ -153,6 +154,8 @@ struct Yue2AitkBlockWorkspace {
 struct Yue2AitkBlockConstants {
     yue2_aitk_executor_detail::Runtime runtime;
     ggml_tensor * cosine = nullptr, * sine = nullptr, * mask = nullptr;
+    // Absolute RoPE positions prefix..prefix+count-1, for ggml_rope_ext.
+    ggml_tensor * positions = nullptr;
     // The backward graphs' loss seed: dL/dL = 1. Their loss gradient
     // accumulator points here instead of being set by ggml_graph_reset, a
     // blocking 4-byte upload per block (YUE2_AITK_BLOCK_RESET=1 restores it).
@@ -162,13 +165,17 @@ struct Yue2AitkBlockConstants {
               const float * cos_data, const float * sin_data, std::string * error) {
         using namespace yue2_aitk_executor_detail;
         YUE2_PROF("constants: mask build + upload");
-        if (!make_runtime(backend, 5*ggml_tensor_overhead()+1024, &runtime, error)) return false;
+        if (!make_runtime(backend, 6*ggml_tensor_overhead()+1024, &runtime, error)) return false;
         cosine = ggml_new_tensor_4d(runtime.ctx, GGML_TYPE_F32, c.head_dim/2, 1, count, 1);
         sine = ggml_new_tensor_4d(runtime.ctx, GGML_TYPE_F32, c.head_dim/2, 1, count, 1);
         std::vector<uint16_t> host;
         mask = make_mask(runtime.ctx, count, prefix, mode, &host, error);
         one = ggml_new_tensor_1d(runtime.ctx, GGML_TYPE_F32, 1);
-        if (!mask || !cosine || !sine || !one || !allocate(&runtime, backend, error)) return false;
+        positions = ggml_new_tensor_1d(runtime.ctx, GGML_TYPE_I32, count);
+        if (!mask || !cosine || !sine || !one || !positions || !allocate(&runtime, backend, error)) return false;
+        std::vector<int32_t> pos(static_cast<size_t>(count));
+        for (int64_t t = 0; t < count; ++t) pos[size_t(t)] = int32_t(prefix + t);
+        ggml_backend_tensor_set(positions, pos.data(), 0, ggml_nbytes(positions));
         const float onef = 1.0f;
         ggml_backend_tensor_set(one, &onef, 0, sizeof(onef));
         ggml_backend_tensor_set(cosine, cos_data, 0, ggml_nbytes(cosine));
@@ -191,7 +198,7 @@ public:
                         Yue2AitkBlockWorkspace * workspace = nullptr,
                         ggml_tensor * device_input = nullptr, ggml_tensor * device_output = nullptr,
                         ggml_tensor * capture_k = nullptr, ggml_tensor * capture_v = nullptr,
-                        bool async = false) {
+                        bool async = false, ggml_tensor * capture_attention = nullptr) {
         using namespace yue2_aitk_executor_detail;
         if (!result) return fail(error, "forward result is null");
         if ((capture_k == nullptr) != (capture_v == nullptr)) return fail(error, "device K/V capture canvases must be paired");
@@ -214,7 +221,7 @@ public:
         ggml_tensor * sin_t = constants ? constants->sine : ggml_new_tensor_4d(r.ctx, GGML_TYPE_F32, config.head_dim/2, 1, sequence, 1);
         std::vector<uint16_t> mask_data; ggml_tensor * mask = constants ? constants->mask : make_mask(r.ctx, sequence, prefix_length, mask_mode, &mask_data, error);
         if (!h || !cos_t || !sin_t || !mask) return fail(error, "forward tensor allocation failed");
-        Yue2AitkBlockResult out = yue2_aitk_graph::block(r.ctx, config, weights, norms, adapters, h, cos_t, sin_t, mask, prefix_k_canvas, prefix_v_canvas, prefix_length, causal_hint(mask_mode, prefix_length, sequence));
+        Yue2AitkBlockResult out = yue2_aitk_graph::block(r.ctx, config, weights, norms, adapters, h, cos_t, sin_t, mask, prefix_k_canvas, prefix_v_canvas, prefix_length, causal_hint(mask_mode, prefix_length, sequence), constants ? constants->positions : nullptr);
         ggml_cgraph * graph = ggml_new_graph_custom(r.ctx, 32768, true); if (!graph) return fail(error, "forward graph allocation failed");
         ggml_tensor * key_cont = capture_kv && out.key ? ggml_cont(r.ctx, out.key) : nullptr;
         ggml_tensor * value_cont = capture_kv && out.value ? ggml_cont(r.ctx, out.value) : nullptr;
@@ -232,7 +239,15 @@ public:
             ggml_build_forward_expand(graph, ggml_cpy(r.ctx, out.key, rows(capture_k)));
             ggml_build_forward_expand(graph, ggml_cpy(r.ctx, out.value, rows(capture_v)));
         }
-        if (yue2_aitk_bf16_storage::enabled())
+        if (capture_attention) {
+            // The packed O+LSE, kept for this block's backward recompute
+            // (backward's saved_attention). Fused attention only.
+            if (!out.attention || capture_attention->type != GGML_TYPE_F32 || !ggml_is_contiguous(capture_attention) ||
+                ggml_nelements(capture_attention) != ggml_nelements(out.attention))
+                return fail(error, "attention capture tensor does not match the fused attention result");
+            ggml_build_forward_expand(graph, ggml_cpy(r.ctx, out.attention, capture_attention));
+        }
+        if (yue2_aitk_bf16_storage::enabled() && yue2_aitk_is_cuda(backend) && !yue2_aitk_graph::strict_f32())
             yue2_aitk_bf16_storage::apply(graph, {hidden_copy ? nullptr : out.hidden, key_cont, value_cont});
         lap.mark("fwd: graph build");
         if (!supports_all(backend, graph, error)) return false;
@@ -276,7 +291,8 @@ public:
                          ggml_tensor * device_input = nullptr, ggml_tensor * device_upstream = nullptr,
                          ggml_tensor * device_dx = nullptr,
                          const std::vector<ggml_tensor *> * gradient_sinks = nullptr,
-                         bool accumulate_sinks = false, bool async = false) {
+                         bool accumulate_sinks = false, bool async = false,
+                         ggml_tensor * saved_attention = nullptr) {
         using namespace yue2_aitk_executor_detail;
         yue2_aitk_prof::Lap lap;
         if (!result || !adapters) return fail(error, "backward result/adapters is null");
@@ -304,7 +320,16 @@ public:
         if(!h||!upstream||!cos_t||!sin_t||!mask) return fail(error,"backward tensor allocation failed");
         TensorFlagsGuard input_flags(device_input);
         ggml_set_param(h);
-        Yue2AitkBlockResult out=yue2_aitk_graph::block(r.ctx,config,weights,norms,adapters,h,cos_t,sin_t,mask,prefix_k_canvas,prefix_v_canvas,prefix_length,causal_hint(mask_mode,prefix_length,sequence));
+        Yue2AitkBlockResult out=yue2_aitk_graph::block(r.ctx,config,weights,norms,adapters,h,cos_t,sin_t,mask,prefix_k_canvas,prefix_v_canvas,prefix_length,causal_hint(mask_mode,prefix_length,sequence),constants ? constants->positions : nullptr);
+        if (saved_attention) {
+            // The forward capture of this very node (same input, weights, mask
+            // and shape): the backend copies it in place of the attention
+            // forward. A backend without the hint recomputes; same result.
+            if (!out.attention || saved_attention->type != GGML_TYPE_F32 || !ggml_is_contiguous(saved_attention) ||
+                ggml_nelements(saved_attention) != ggml_nelements(out.attention))
+                return fail(error, "saved attention does not match the fused attention result");
+            ggml_flash_attn_train_set_saved(out.attention, saved_attention);
+        }
         ggml_tensor * loss=ggml_sum(r.ctx,ggml_mul(r.ctx,out.hidden,upstream)); ggml_cgraph * graph=ggml_new_graph_custom(r.ctx,65536,true); if(!loss||!graph) return fail(error,"backward graph allocation failed");
         ggml_build_forward_expand(graph,loss); ggml_set_loss(loss);
         lap.mark("bwd: graph build");
@@ -335,7 +360,7 @@ public:
                 ggml_set_output(store); ggml_build_forward_expand(graph, store);
             }
         }
-        if (yue2_aitk_bf16_storage::enabled())
+        if (yue2_aitk_bf16_storage::enabled() && yue2_aitk_is_cuda(backend) && !yue2_aitk_graph::strict_f32())
             yue2_aitk_bf16_storage::apply(graph, {device_dx ? nullptr : ggml_graph_get_grad(graph, h)});
         if(!supports_all(backend,graph,error)) return false;
         lap.mark("bwd: supports_op scan");

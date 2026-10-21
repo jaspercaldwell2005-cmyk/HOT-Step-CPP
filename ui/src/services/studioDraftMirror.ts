@@ -1,3 +1,4 @@
+import type { ReadOptions } from './httpClient';
 // studioDraftMirror.ts — mirror a studio's autosaved fields into its own
 // revisioned server draft (/api/studio-drafts), and load a saved draft back.
 //
@@ -27,14 +28,15 @@ export function createDraftMirror(deps: DraftMirrorDeps) {
   // This editor's draft. Read once: another editor's later writes to the
   // shared pointer must not lend this one their revision.
   let current = deps.pointer.read();
-  let pending: { token: string; body: StudioDraftBody } | null = null;
+  let pending: { body: StudioDraftBody } | null = null;
   let running: Promise<void> | null = null;
   let epoch = 0;
   let loadSeq = 0;
+  let loadController: AbortController | null = null;
 
   async function drain(): Promise<void> {
     while (pending) {
-      const { token, body } = pending;
+      const { body } = pending;
       pending = null;
       const saved = JSON.stringify(body);
       if (current?.saved === saved) continue;
@@ -42,12 +44,12 @@ export function createDraftMirror(deps: DraftMirrorDeps) {
       try {
         let document;
         let notice = '';
-        if (!current) document = (await deps.api.create(token, body)).document;
+        if (!current) document = (await deps.api.create(body)).document;
         else {
-          try { document = (await deps.api.update(token, current.id, current.revision, body)).document; }
+          try { document = (await deps.api.update(current.id, current.revision, body)).document; }
           catch (err) {
             if (statusOf(err) !== 409 && statusOf(err) !== 404) throw err;
-            document = (await deps.api.create(token, body)).document;
+            document = (await deps.api.create(body)).document;
             if (statusOf(err) === 409) notice = 'The saved draft changed elsewhere; your edits were saved as a new draft.';
           }
         }
@@ -57,7 +59,7 @@ export function createDraftMirror(deps: DraftMirrorDeps) {
         deps.onError(notice);
       } catch (err) {
         if (started !== epoch) continue;
-        pending ??= { token, body };
+        pending ??= { body };
         deps.onError(`Draft not saved: ${messageOf(err)}. Your edits stay in this browser.`);
         return;
       }
@@ -65,9 +67,10 @@ export function createDraftMirror(deps: DraftMirrorDeps) {
   }
 
   return {
+    cancelLoad(): void { loadSeq++; loadController?.abort(); loadController = null; },
     /** Queue the latest body; resolves when everything queued so far is written or has failed. */
-    save(token: string, body: StudioDraftBody): Promise<void> {
-      pending = { token, body };
+    save(body: StudioDraftBody): Promise<void> {
+      pending = { body };
       running ??= drain().finally(() => { running = null; });
       return running;
     },
@@ -85,10 +88,12 @@ export function createDraftMirror(deps: DraftMirrorDeps) {
      *  a later load wins, a refusal (e.g. another backend) changes nothing, and
      *  the live form (not the form at selection time) decides whether to ask
      *  before replacing unsaved edits. Resolves true when the draft was applied. */
-    async load(token: string, id: string, h: LoadHooks): Promise<boolean> {
+    async load(id: string, h: LoadHooks): Promise<boolean> {
       const seq = ++loadSeq;
+      loadController?.abort();
+      loadController = new AbortController();
       try {
-        const { document, sourceError } = await h.get(token, id);
+        const { document, sourceError } = await h.get(id, { signal: loadController.signal });
         if (seq !== loadSeq) return false;
         const refusal = h.refuse?.(document.body);
         if (refusal) { deps.onError(refusal); return false; }
@@ -108,7 +113,7 @@ export function createDraftMirror(deps: DraftMirrorDeps) {
 const REPLACE_PROMPT = 'Replace the current form with the saved draft? Edits not yet saved to a draft will be lost.';
 
 export interface LoadHooks {
-  get(token: string, id: string): Promise<{ document: StudioDraftDocument; sourceError: string | null }>;
+  get(id: string, options?: ReadOptions): Promise<{ document: StudioDraftDocument; sourceError: string | null }>;
   /** The form as it is now. */
   current(): StudioDraftBody;
   confirm(message: string): boolean;
@@ -141,24 +146,30 @@ export interface StudioDraftControl {
   load(id: string, apply: (body: StudioDraftBody) => void, refuse?: (body: StudioDraftBody) => string): Promise<boolean>;
 }
 
+/** The field a named save writes the draft's name into, per studio. */
+export function draftNameKey(studio: StudioDraftBody['studio']): string {
+  return studio === 'cover' ? 'cover-studio-draftName' : 'hs-draftName';
+}
+
 /** Mirror `fields` into this editor's draft for `studio`. */
 export function useStudioDraftMirror(studio: StudioDraftBody['studio'], token: string | null | undefined,
   fields: Record<string, unknown>, identity: Omit<StudioDraftBody, 'studio' | 'fields'> = {}): StudioDraftControl {
   const [error, setError] = useState('');
   const mirror = useMemo(() => createDraftMirror({ api: studioDraftsApi, pointer: localPointer(studio), onError: setError }), [studio]);
+  useEffect(() => () => mirror.cancelLoad(), [mirror, token]);
   const body = JSON.stringify({ studio, fields, ...identity });
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!token) return;
-    timer.current = window.setTimeout(() => { void mirror.save(token, JSON.parse(body)); }, 1000);
+    timer.current = window.setTimeout(() => { void mirror.save(JSON.parse(body)); }, 1000);
     return () => window.clearTimeout(timer.current);
   }, [mirror, token, body]);
-  const list = useCallback(async () => token ? (await studioDraftsApi.list(token, studio)).documents : [], [token, studio]);
+  const list = useCallback(async () => token ? (await studioDraftsApi.list(studio)).documents : [], [token, studio]);
   const bodyRef = useRef(body);
   bodyRef.current = body;
   const load = useCallback(async (id: string, apply: (draft: StudioDraftBody) => void, refuse?: (draft: StudioDraftBody) => string) => {
     if (!token) return false;
-    return mirror.load(token, id, {
+    return mirror.load(id, {
       get: studioDraftsApi.get, current: () => JSON.parse(bodyRef.current), refuse,
       confirm: message => window.confirm(message),
       apply: draft => { window.clearTimeout(timer.current); apply(draft); },
@@ -168,13 +179,13 @@ export function useStudioDraftMirror(studio: StudioDraftBody['studio'], token: s
     if (!token || !name.trim()) return false;
     try {
       const current = JSON.parse(bodyRef.current) as StudioDraftBody;
-      await studioDraftsApi.create(token, { ...current, fields: { ...current.fields, 'cover-studio-draftName': name.trim() } });
+      await studioDraftsApi.create({ ...current, fields: { ...current.fields, [draftNameKey(studio)]: name.trim() } });
       setError('');
       return true;
     } catch (err) {
       setError(`Draft not saved: ${messageOf(err)}`);
       return false;
     }
-  }, [token]);
+  }, [token, studio]);
   return { error, list, load, saveNamed };
 }

@@ -16,10 +16,9 @@ import { config } from '../config.js';
 import { getUserId } from './auth.js';
 import { logGeneration, failGenerationLog } from '../services/logger.js';
 import { engineReady, engineBootStatus } from '../engineState.js';
-import { isEngineSuspended } from '../services/aceEngineProcess.js';
+import { isEngineSuspended, engineCrashSeq } from '../services/aceEngineProcess.js';
 import { pushLog } from './logs.js';
 import { getBackend, getActiveBackendId } from '../services/backends/registry.js';
-import { awaitBackendRelease } from '../services/generation/backendRelease.js';
 import { mm3StreamUrl } from '../services/backends/minimax/client.js';
 import {
   runOnGpuLane, gpuLaneBusy, gpuLaneDepth, gpuLaneOwner, gpuLaneNextFamily, releaseGpuLane, resetGpuLane,
@@ -28,12 +27,18 @@ import {
 import { isActiveJob, type GenerationJob } from '../services/generation/jobTypes.js';
 import { pollUntilDone } from '../services/generation/pollUntilDone.js';
 import { dropYue2BatchMember } from '../services/backends/yue2/generate.js';
+import { yue2Synth, splitMultipartMixed } from '../services/backends/yue2/client.js';
+import { tokenizeForSa3 } from '../services/sa3Tokenizer.js';
+import { buildSlotRequest, renderSlotOnLane, waitForSlotJob, type SlotJobEnd } from '../services/storm/slot.js';
+import { initDrift, updateDriftPressure, resolveStartDrift, defaultDriftPressure, snapshot as driftSnapshot } from '../services/storm/drift.js';
+import type { DriftRuntime, DriftPressure } from '../services/storm/drift.js';
 import { translateParams } from '../services/generation/translateParams.js';
 import { timbreReferenceMissing } from '../services/generation/sourceAudio.js';
 import { buildEnvelope, GenerationEnvelopeError } from '../services/generation/envelope.js';
-import { isGenerationIntent } from '../contracts/generation.js';
+import { isGenerationIntent, readBackendOverride } from '../contracts/generation.js';
+import { preparedParams } from '../contracts/yue2Prepare.js';
 import { GenerationIntentError, resolveGenerationIntent } from '../services/generation/intent.js';
-import { noteEnqueued, noteFinished } from '../services/generation/residency.js';
+import { evictOtherFamilies, noteEnqueued, noteFinished } from '../services/generation/residency.js';
 import { runYue2PlanPreview } from '../services/backends/yue2/generate.js';
 import {
   checkoutState, createGenerateCapture, generateCaptureDir, generateCaptureMode,
@@ -46,12 +51,14 @@ import type {
 import { openStreamSession, type StreamSession } from '../services/streamSessions/index.js';
 import { getDb } from '../db/database.js';
 import { GenerationJobLedger, ledgerStatusBody, type LedgerEntry } from '../services/generation/jobLedger.js';
+import { registerJobsBusyCheck, trackBusy } from '../dataroot/pointer.js';
 
 export type { GenerationJob, StageTiming } from '../services/generation/jobTypes.js';
 
 const router = Router();
 
 const jobs = new Map<string, GenerationJob>();
+registerJobsBusyCheck('generation', jobs);
 
 // Each job's outcome, kept in the database so /status can still answer after a
 // restart empties `jobs` (services/generation/jobLedger.ts). Best-effort: a
@@ -158,8 +165,8 @@ async function runGeneration(
   if (!backend) throw new Error(`Captured generation backend '${backendId ?? '(missing)'}' is not registered`);
   if (!lease.isCurrent()) return emptyOutcome(job, 'reset');
   // A backend switch evicts the outgoing family in the background; no family
-  // loads weights until that eviction is confirmed.
-  await awaitBackendRelease();
+  // loads weights until that eviction, and every other family's, is confirmed.
+  await evictOtherFamilies(backendId);
   return backend.generate(job, {
     envelope: job.envelope,
     attempt,
@@ -188,7 +195,7 @@ function enqueueGeneration(job: GenerationJob): void {
     console.log(`[Generate] Job ${job.id} queued (${gpuLaneDepth() + 1} waiting)`);
   }
 
-  void runOnGpuLane(async (lease) => {
+  void trackBusy('generation', runOnGpuLane(async (lease) => {
     const retryPolicy = job.envelope.policy.retry;
     let attemptNumber = 0;
     let reseededForAttempt = false;
@@ -262,7 +269,7 @@ function enqueueGeneration(job: GenerationJob): void {
   }).finally(() => {
     noteFinished(family);
     withLedger('finish', ledger => ledger.finished(job));
-  });
+  }));
 }
 
 // POST /api/generate — start a generation job
@@ -293,7 +300,10 @@ router.post('/yue2/plan', async (req, res) => {
   res.on('close', () => { if (!res.writableFinished) abort.abort(); });
   try {
     noteEnqueued('yue2');
-    const preview = await runOnGpuLane(() => runYue2PlanPreview(params, abort.signal), { label: 'yue2 score preview', family: 'yue2' });
+    const preview = await runOnGpuLane(async () => {
+      await evictOtherFamilies('yue2');
+      return runYue2PlanPreview(params, abort.signal);
+    }, { label: 'yue2 score preview', family: 'yue2' });
     res.json(preview);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -316,6 +326,17 @@ const generateCapture = createGenerateCapture({
 export type SubmitGenerationResult =
   | { ok: true; jobId: string; status: GenerationJob['status'] }
   | { ok: false; status: number; body: Record<string, unknown> };
+
+/** A submission carrying a YuE2 Prepare document (`yue2Prepare`) passes the
+ *  shared check (contracts/yue2Prepare.ts) and is queued without it; any
+ *  other submission is returned as it came. */
+export function withoutPrepareDocument(submission: any): { submission: any } | { error: string } {
+  if (!submission || typeof submission !== 'object' || submission.yue2Prepare === undefined) return { submission };
+  const pair = preparedParams(submission);
+  if ('error' in pair) return pair;
+  const { yue2Prepare: _, ...rest } = submission;
+  return { submission: rest };
+}
 
 /** Validate and queue one generation, exactly as POST /api/generate does.
  *  Exported so the durable audio intent queue (services/audioQueue) submits
@@ -341,25 +362,49 @@ export async function submitGeneration(raw: any, userId: string | null): Promise
   // request for; the UI never sends this. `backend` stays log-only — only
   // `expectedBackend` can block a submit, so a caller that races a backend
   // switch fails loudly instead of training/rendering on the wrong one.
-  const mismatch = expectedBackendMismatch(
-    isGenerationIntent(raw) ? raw.input : raw,
-    getActiveBackendId(),
-  );
-  if (mismatch) {
-    return { ok: false, status: 409, body: {
-      error: `Expected backend '${mismatch.expectedBackend}' but the active backend is '${mismatch.activeBackend}'`,
-      ...mismatch,
-    } };
+  // With a backendOverride, `expectedBackend` is checked against the override
+  // (the backend the job will run on); without one, against the active
+  // backend. A malformed override is a 400 here; an unknown one skips this and
+  // gets its 400 below.
+  let checkedOverride: string | undefined;
+  try { checkedOverride = readBackendOverride(raw); } catch (err) {
+    return { ok: false, status: 400, body: { error: err instanceof Error ? err.message : 'Invalid backendOverride' } };
+  }
+  if (checkedOverride === undefined || getBackend(checkedOverride)) {
+    const mismatch = expectedBackendMismatch(
+      isGenerationIntent(raw) ? raw.input : raw,
+      checkedOverride ?? getActiveBackendId(),
+    );
+    if (mismatch) {
+      return { ok: false, status: 409, body: checkedOverride === undefined ? {
+        error: `Expected backend '${mismatch.expectedBackend}' but the active backend is '${mismatch.activeBackend}'`,
+        ...mismatch,
+      } : {
+        error: `Expected backend '${mismatch.expectedBackend}' but backendOverride selects '${checkedOverride}'`,
+        expectedBackend: mismatch.expectedBackend,
+        backendOverride: checkedOverride,
+        activeBackend: getActiveBackendId(),
+      } };
+    }
   }
 
   let submission = raw;
   if (isGenerationIntent(raw)) {
     try {
-      const backendId = getActiveBackendId();
+      // An opt-in `backendOverride` resolves the intent for that backend;
+      // otherwise the active one, as before.
+      let override: string | undefined;
+      try { override = readBackendOverride(raw); } catch (err) {
+        throw new GenerationIntentError(err instanceof Error ? err.message : 'Invalid backendOverride');
+      }
+      if (override !== undefined && !getBackend(override)) {
+        throw new GenerationIntentError(`Unknown backendOverride '${override}'`);
+      }
+      const backendId = override ?? getActiveBackendId();
       const backend = getBackend(backendId);
       if (!backend) throw new Error(`Active generation backend '${backendId}' is not registered`);
       const capabilities = await backend.capabilities();
-      if (getActiveBackendId() !== backendId) {
+      if (override === undefined && getActiveBackendId() !== backendId) {
         return { ok: false, status: 409, body: { error: `Active backend changed while resolving generation intent`, activeBackend: getActiveBackendId() } };
       }
       submission = resolveGenerationIntent(raw, backendId, capabilities.extensions);
@@ -378,6 +423,10 @@ export async function submitGeneration(raw: any, userId: string | null): Promise
       return { ok: false, status: 400, body: { error: `Timbre reference file is missing (${missing}). The upload it referred to is gone; re-upload it or clear the reference.` } };
     }
   }
+
+  const prepared = withoutPrepareDocument(submission);
+  if ('error' in prepared) return { ok: false, status: 409, body: { error: prepared.error } };
+  submission = prepared.submission;
 
   const jobId = uuidv4();
   const enqueuedAt = Date.now();
@@ -682,6 +731,12 @@ interface StreamControlState {
   inferMethod: string | null;
   scheduler: string | null;
   guidanceMode: string | null;
+  /** Active drift runtime, set at stream start when baseParams.drift is present. */
+  drift?: DriftRuntime;
+  /** baseSeed resolved at stream start; used by /storm/control pre-stream drift seeding. */
+  baseSeed?: number;
+  /** True when ctrl.drift was set by /storm/control while no stream was live. */
+  driftPending?: boolean;
 }
 
 const streamRunning = new Map<string, boolean>();
@@ -705,7 +760,12 @@ function getStreamControl(streamId: string): StreamControlState {
 }
 
 function stopStream(streamId: string): void {
+  const wasRunning = streamRunning.get(streamId) === true;
   streamRunning.set(streamId, false);
+  // Drop the live drift runtime so it cannot leak into the next stream.
+  // A pending (idle-time) drift is left alone.
+  const c = streamControl.get(streamId);
+  if (c && wasRunning && !c.driftPending) c.drift = undefined;
   const aceJobId = streamAceJob.get(streamId);
   if (aceJobId) {
     aceClient.cancelJob(aceJobId).catch(() => {});
@@ -765,9 +825,20 @@ router.post('/storm/stream', async (req, res) => {
   // "Keep DiT & VAE loaded" setting — same per-request ?keep_loaded=1 the
   // normal synth phase sends; without it the engine evicts between slots.
   const coResident = baseParams.coResident === true;
+  // Snapshot the active backend at stream start. Switching backends mid-stream
+  // is not supported; a new stream must be started after a backend switch.
+  const streamBackend = getActiveBackendId();
   let slotIdx = 0;
 
-  console.log(`[STORM ${streamId}] stream started (baseSeed=${baseSeed})`);
+  // Record the resolved baseSeed so pre-stream /storm/control calls can use it.
+  ctrl.baseSeed = baseSeed;
+
+  // Resolve the drift runtime. A pre-stream /storm/control drift is kept only
+  // when it is flagged pending; leftovers from a finished stream are dropped.
+  ctrl.drift = resolveStartDrift(ctrl.drift, ctrl.driftPending === true, baseParams.drift, baseSeed);
+  ctrl.driftPending = false;
+
+  console.log(`[STORM ${streamId}] stream started (baseSeed=${baseSeed}, backend=${streamBackend})`);
   pushLog(`[STORM ${streamId}] stream started`);
 
   try {
@@ -779,96 +850,105 @@ router.post('/storm/stream', async (req, res) => {
       }
       if (!streamRunning.get(streamId)) break;
 
-      const mergedPluginParams = {
-        ...(typeof baseParams.pluginParams === 'object' && baseParams.pluginParams !== null
-          ? baseParams.pluginParams as Record<string, unknown> : {}),
-        ...ctrl.extraPluginParams,
-      };
-
-      // NOTE: keys here must match what translateParams reads (camelCase for
-      // UI-facing params). An explicit per-slot seed also requires
-      // randomSeed=false or translateParams re-randomizes it.
-      const slotReq: Record<string, unknown> = {
-        ...baseParams,
-        randomSeed: false,
-        seed: ctrl.nextSeed !== null
-          ? ctrl.nextSeed
-          : (ctrl.seedLock ? baseSeed : baseSeed + slotIdx),
-        guidanceScale: ctrl.guidanceScale,
-        ...(ctrl.lssStrength > 0 ? { lssStrength: ctrl.lssStrength } : {}),
-        ...(ctrl.inferenceSteps > 0 ? { inferenceSteps: ctrl.inferenceSteps } : {}),
-        ...(ctrl.nextBpm !== null ? { bpm: ctrl.nextBpm } : ctrl.bpm > 0 ? { bpm: ctrl.bpm } : {}),
-        ...(ctrl.nextDuration !== null ? { duration: ctrl.nextDuration } : ctrl.duration > 0 ? { duration: ctrl.duration } : {}),
-        // Solver / scheduler / guidance live overrides — null keeps the snapshot value
-        ...(ctrl.inferMethod ? { inferMethod: ctrl.inferMethod } : {}),
-        ...(ctrl.scheduler ? { scheduler: ctrl.scheduler } : {}),
-        ...(ctrl.guidanceMode ? { guidanceMode: ctrl.guidanceMode } : {}),
-        ...(Object.keys(mergedPluginParams).length > 0 ? { pluginParams: mergedPluginParams } : {}),
-      };
-
-      // One-shot overrides (consumed after applying); Stick makes them base
+      // Log one-shot fields before buildSlotRequest reads them (they are
+      // cleared below after the helper returns).
       if (ctrl.nextPrompt !== null) {
-        slotReq.caption = ctrl.nextPrompt;
-        slotReq.prompt = ctrl.nextPrompt;
-        ctrl.nextPrompt = null;
         console.log(`[STORM ${streamId}] slot ${slotIdx}: applying queued prompt`);
-      } else if (ctrl.baseCaption !== null) {
-        slotReq.caption = ctrl.baseCaption;
-        slotReq.prompt = ctrl.baseCaption;
       }
       if (ctrl.nextLyrics !== null) {
-        slotReq.lyrics = ctrl.nextLyrics;
-        slotReq.instrumental = false;
+        console.log(`[STORM ${streamId}] slot ${slotIdx}: lyrics applied (one-shot), instrumental off`);
+      }
+
+      // Build the per-backend wire request via the shared slot helper.
+      // The helper reads ctrl but does not mutate it.
+      const slotResult = buildSlotRequest(baseParams, ctrl, slotIdx, baseSeed, streamBackend);
+
+      // Consume one-shot fields (same clearing the inline code did before).
+      if (ctrl.nextPrompt !== null) ctrl.nextPrompt = null;
+      if (ctrl.nextLyrics !== null) {
         ctrl.baseInstrumental = false;
         ctrl.nextLyrics = null;
-        console.log(`[STORM ${streamId}] slot ${slotIdx}: lyrics applied (one-shot), instrumental off`);
-      } else if (ctrl.baseLyrics !== null) {
-        slotReq.lyrics = ctrl.baseLyrics;
-        slotReq.instrumental = false;
-      } else if (ctrl.baseInstrumental === false) {
-        slotReq.instrumental = false;
       }
       if (ctrl.nextSeed !== null) ctrl.nextSeed = null;
       if (ctrl.nextBpm !== null) ctrl.nextBpm = null;
       if (ctrl.nextDuration !== null) ctrl.nextDuration = null;
 
-      const aceReq = translateParams(slotReq);
+      // Resolves only once the engine is done with the slot, so the lane is
+      // held through it. Stop/disconnect cancels an ACE/YuE2 job and waits for
+      // its terminal state; an SA3 slot (one synchronous fetch, no mid-render
+      // cancel) finishes. Either way the output is discarded.
+      const renderSlot = async (): Promise<Buffer | null> => {
+        if (slotResult.kind === 'sa3') {
+          const { ids, nTokens } = await tokenizeForSa3(slotResult.caption);
+          return aceClient.submitSa3Synth({
+            tokens: ids,
+            nTokens,
+            durationSec: slotResult.durationSec,
+            steps: slotResult.steps,
+            sampler: slotResult.sampler,
+            seed: slotResult.seed,
+            ...(slotResult.seedB !== undefined ? { seedB: slotResult.seedB, seedBlend: slotResult.seedBlend } : {}),
+            adapters: slotResult.adapters,
+            outFmt: 'f32',
+            ...(slotResult.solver        ? { solver:        slotResult.solver }        : {}),
+            ...(slotResult.scheduler     ? { scheduler:     slotResult.scheduler }     : {}),
+            ...(slotResult.guidanceMode  ? { guidanceMode:  slotResult.guidanceMode }  : {}),
+            ...(slotResult.guidanceScale !== undefined ? { guidanceScale: slotResult.guidanceScale } : {}),
+            ...(slotResult.pluginParams  ? { pluginParams:  slotResult.pluginParams }  : {}),
+            ...(slotResult.postprocessPlugin ? { postprocessPlugin: slotResult.postprocessPlugin } : {}),
+          });
+        }
 
-      // Inline poll — checks streamRunning every 300 ms so stop/disconnect
-      // cancels mid-render instead of waiting out the slot.
-      const synthJobId = await aceClient.submitSynth(aceReq, 'wav32', coResident);
-      streamAceJob.set(streamId, synthJobId);
-      const slotStart = Date.now();
-      let jobDone = false;
-      while (!jobDone) {
-        if (!streamRunning.get(streamId)) {
-          await aceClient.cancelJob(synthJobId).catch(() => {});
-          console.log(`[STORM ${streamId}] slot ${slotIdx}: cancelled mid-render`);
-          break;
-        }
-        if (Date.now() - slotStart > STREAM_SLOT_TIMEOUT_MS) {
-          await aceClient.cancelJob(synthJobId).catch(() => {});
-          console.warn(`[STORM ${streamId}] slot ${slotIdx}: render timeout — stopping stream`);
-          streamRunning.set(streamId, false);
-          break;
-        }
-        const status = await aceClient.pollJob(synthJobId);
-        if (status.status === 'done') { jobDone = true; break; }
-        if (status.status === 'failed' || status.status === 'cancelled') {
-          console.warn(`[STORM ${streamId}] slot ${slotIdx}: ${status.status}`);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 300));
-      }
-      streamAceJob.delete(streamId);
-      if (!jobDone || !streamRunning.get(streamId)) break;
+        // Submit to the right backend and get a shared-job id.
+        const synthJobId = slotResult.kind === 'yue2'
+          ? (await yue2Synth(slotResult.yue2Req)).job_id
+          : await aceClient.submitSynth(slotResult.aceReq, 'wav32', coResident);
 
-      const audioRes = await aceClient.getJobResult(synthJobId);
-      if (!audioRes.ok) {
-        console.warn(`[STORM ${streamId}] slot ${slotIdx}: result fetch failed (${audioRes.status})`);
-        break;
-      }
-      const wavBuf = Buffer.from(await audioRes.arrayBuffer());
+        // Stop/disconnect cancels mid-render; the wait still lasts until the
+        // engine settles (poll errors are retried), so the lane is held.
+        streamAceJob.set(streamId, synthJobId);
+        let end: SlotJobEnd;
+        try {
+          end = await waitForSlotJob({
+            poll: () => aceClient.pollJob(synthJobId),
+            cancel: () => aceClient.cancelJob(synthJobId),
+            isRunning: () => streamRunning.get(streamId) === true,
+            onTimeout: () => streamRunning.set(streamId, false),
+            engineCrashSeq,
+            timeoutMs: STREAM_SLOT_TIMEOUT_MS,
+            log: msg => console.warn(`[STORM ${streamId}] slot ${slotIdx}: ${msg}`),
+          });
+        } finally {
+          streamAceJob.delete(streamId);
+        }
+        if (end !== 'done') {
+          console.warn(`[STORM ${streamId}] slot ${slotIdx}: ${end}`);
+          return null;
+        }
+        if (!streamRunning.get(streamId)) return null;
+
+        const audioRes = await aceClient.getJobResult(synthJobId);
+        if (!audioRes.ok) {
+          console.warn(`[STORM ${streamId}] slot ${slotIdx}: result fetch failed (${audioRes.status})`);
+          return null;
+        }
+        const audioBody = Buffer.from(await audioRes.arrayBuffer());
+        // YuE2 may return multipart/mixed (one WAV per track); take the first
+        // part. ACE always returns a single WAV so the same path works for both.
+        const contentType = audioRes.headers.get('content-type') || 'audio/wav';
+        return contentType.startsWith('multipart/mixed')
+          ? (splitMultipartMixed(audioBody, contentType)[0] ?? audioBody)
+          : audioBody;
+      };
+
+      const wavBuf = await renderSlotOnLane({
+        label: `storm ${streamId} slot ${slotIdx}`,
+        family: streamBackend,
+        isRunning: () => streamRunning.get(streamId) === true,
+        evict: () => evictOtherFamilies(streamBackend),
+        render: renderSlot,
+      });
+      if (!wavBuf) break;
       res.write(wavBuf);
       session?.chunk(wavBuf);
       slotIdx++;
@@ -877,15 +957,27 @@ router.post('/storm/stream', async (req, res) => {
     console.error(`[STORM stream ${streamId}] error:`, err);
   } finally {
     stopStream(streamId);
+    // Keep a drift that a POST /storm/control set as pending after the stream
+    // ended; everything else (including live drift) is discarded.
+    const endCtrl = streamControl.get(streamId);
+    const pendingDrift = endCtrl?.driftPending ? endCtrl.drift : undefined;
     streamControl.delete(streamId);
     session?.end();
+    if (pendingDrift) {
+      const fresh = getStreamControl(streamId);
+      fresh.drift = pendingDrift;
+      fresh.driftPending = true;
+    }
     console.log(`[STORM ${streamId}] stream ended after ${slotIdx} slot(s)`);
     pushLog(`[STORM ${streamId}] stream ended after ${slotIdx} slot(s)`);
     res.end();
   }
 });
 
-// POST /api/generate/storm/stop — stop a stream (cancels the in-flight slot)
+// POST /api/generate/storm/stop — stop a stream. No further slot starts. An
+// in-flight ACE/YuE2 slot is cancelled; an in-flight SA3 slot runs to the end
+// (no mid-render cancel). Its output is discarded either way, and the GPU lane
+// stays held until the engine has finished.
 router.post('/storm/stop', (req, res) => {
   const b = req.body as Record<string, unknown>;
   const streamId = typeof b.streamId === 'string' ? b.streamId : 'default';
@@ -924,6 +1016,25 @@ router.post('/storm/control', (req, res) => {
       if (typeof v === 'number' || typeof v === 'string') ctrl.extraPluginParams[k] = v;
     }
   }
+  // Drift pressure patch -- ignore bad fields, never throw.
+  if (b.drift && typeof b.drift === 'object' && !Array.isArray(b.drift)) {
+    const live = streamRunning.get(streamId) === true;
+    if (live && ctrl.drift) {
+      // Stream is live: merge into existing runtime.
+      updateDriftPressure(ctrl.drift, b.drift as Partial<DriftPressure>);
+    } else if (!live && ctrl.drift && ctrl.driftPending) {
+      // Already pending: merge further idle-time patches.
+      updateDriftPressure(ctrl.drift, b.drift as Partial<DriftPressure>);
+    } else {
+      // Fresh runtime. When idle it is stored as pending; state is re-seeded
+      // with the real baseSeed at stream start (resolveStartDrift).
+      const seed = ctrl.baseSeed ?? Math.floor(Math.random() * 2147483647);
+      const driftRuntime: DriftRuntime = { state: initDrift(seed), pressure: defaultDriftPressure() };
+      updateDriftPressure(driftRuntime, b.drift as Partial<DriftPressure>);
+      ctrl.drift = driftRuntime;
+      ctrl.driftPending = !live;
+    }
+  }
 
   res.json({ ok: true, streamId });
 });
@@ -931,9 +1042,12 @@ router.post('/storm/control', (req, res) => {
 // GET /api/generate/storm/control — read back a stream's live state
 router.get('/storm/control', (req, res) => {
   const streamId = typeof req.query.streamId === 'string' ? req.query.streamId : 'default';
+  const ctrl = getStreamControl(streamId);
+  const { drift: _drift, ...ctrlWithoutDrift } = ctrl;
   res.json({
     running: streamRunning.get(streamId) ?? false,
-    ...getStreamControl(streamId),
+    ...ctrlWithoutDrift,
+    ...(ctrl.drift ? { drift: driftSnapshot(ctrl.drift) } : {}),
   });
 });
 

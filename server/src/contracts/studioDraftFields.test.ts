@@ -12,7 +12,8 @@ import { createStudioDraftsRouter } from '../routes/studioDrafts.js';
 // (b92bb7fd): "<studio>|<accepted value kinds>" per key. s=string b=boolean
 // n=finite number inf=Infinity null o=object a=array; '-' = no studio.
 const RECORDED: Record<string, string[]> = {
-  'cover|null,o,': ['cover-studio-analysis', 'cover-studio-metadata', 'cover-studio-selectedPreset', 'cover-studio-scoreTempoScale', 'cover-studio-approvedSheet'],
+  'cover|null,o,': ['cover-studio-analysis', 'cover-studio-metadata', 'cover-studio-selectedPreset', 'cover-studio-scoreTempoScale', 'cover-studio-approvedSheet', 'cover-studio-buildLyricsDraft'],
+  'cover|null,': ['cover-studio-prepareV2'],
   'cover|s,': ['cover-studio-artistCaption', 'cover-studio-coverNoiseMethod', 'cover-studio-coverTimbreOverride', 'cover-studio-coverVocalLanguage',
     'cover-studio-lyrics', 'cover-studio-songArtist', 'cover-studio-songTitle', 'cover-studio-sourceAssetId', 'cover-studio-sourceAudioUrl',
     'cover-studio-sourceFileName', 'cover-studio-sourceLatentUrl', 'cover-studio-sourceSongId',
@@ -30,7 +31,7 @@ const RECORDED: Record<string, string[]> = {
   'cover|a,': ['cover-studio-scoreSections', 'cover-studio-scoreCuts'],
   'cover|s,null,': ['cover-studio-keyOverride', 'cover-studio-lyricsSource'],
   '-|': ['cover-studio-nope', 'hs-unknown', 'hs-yue2CaptionSource:ds:a:b', 'lireek-playQueue'],
-  'create|s,': ['hs-artist', 'hs-caption', 'hs-keyScale', 'hs-lora-trigger', 'hs-lyrics', 'hs-negative-prompt', 'hs-sourceLatentUrl', 'hs-subject',
+  'create|s,': ['hs-artist', 'hs-caption', 'hs-draftName', 'hs-keyScale', 'hs-lora-trigger', 'hs-lyrics', 'hs-negative-prompt', 'hs-sourceLatentUrl', 'hs-subject',
     'hs-timeSignature', 'hs-title', 'hs-vocalGender', 'hs-vocalLanguage', 'hs-yue2CaptionDataset'],
   'create|b,': ['hs-beat-intro', 'hs-instrumental'],
   'create|n,': ['hs-bpm', 'hs-duration', 'hs-intro-bars'],

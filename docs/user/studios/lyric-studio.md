@@ -75,8 +75,9 @@ from the album sidebar. See [Bulk operations](#bulk-operations) below.
 | LLM providers (Profile / Generate / Refine rows) | Independent provider+model choice for each of the three LLM roles. See [LLM providers](#llm-providers) below. |
 | Filename Prepend | Text prepended to downloaded audio filenames for songs from this artist. |
 | LLM Duration | When on, uses the LLM's own estimated song duration; when off, calculates duration from the lyrics and BPM instead, which tends to undershoot less than an LLM's guess. |
-| Randomize Timbre | Picks a random track from the reference folder as the timbre conditioner on each render, instead of the album preset's one fixed reference track. |
-| Use LM Adapter | Off by default. When on, Send-to-Custom-Gen also applies the album preset's planner-LM adapter alongside the DiT adapter. |
+| Master to Album Track | Off by default. When on, every Lyric Studio render is mastered to a random track from the album's training dataset, a different one each time, with Mastering turned on and the VST chain skipped for those renders. Your post-processing settings are not changed. An album with no training dataset keeps the mastering reference as set. |
+| Randomize Timbre | Picks a random track from the reference folder as the timbre conditioner on each render, instead of the album preset's one fixed reference track. ACE-Step only; hidden on the other backends. |
+| Use LM Adapter | Off by default. When on, Send-to-Custom-Gen also applies the album preset's planner-LM adapter alongside the DiT adapter. ACE-Step only; hidden on the other backends. |
 | Bulk Operations | Opens the queue panel described below. |
 
 ### Bulk operations
@@ -149,6 +150,11 @@ in or fetched from Genius. Those captions, and the YuE2 caption examples the
 caption writer imitates, are re-read from the dataset's sidecar files every
 time the set is loaded, including by the MCP tools, so a re-captioned dataset
 shows up without re-exporting.
+
+Returning to an artist or album reuses recent catalogue results. Saving
+profiles, presets or drafts refreshes their saved lists while unsaved lyric
+text stays in the editor. Reconnecting a workflow stream refreshes its status
+without repeating the render command.
 
 ## Related
 

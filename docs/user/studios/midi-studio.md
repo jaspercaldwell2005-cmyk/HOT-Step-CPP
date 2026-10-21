@@ -36,7 +36,9 @@ Before the first transcription:
    PC" (drag-and-drop onto the panel also works).
 4. Click "Transcribe to MIDI".
 5. Watch the piano roll fill in as chunks complete, or check back later.
-   The job keeps running and appears under Transcriptions either way.
+   The job keeps running and appears under Transcriptions either way. If a
+   generation or post-processing pass is running or queued, the job waits as
+   queued until the GPU is free, then starts.
 6. Once done, expand the job to preview it, or download the `.mid`.
 
 If the source audio has a `.lrc` file beside it with the same base name,
@@ -63,6 +65,12 @@ labels such as `[Chorus]` are skipped. The piano-roll preview shows notes only.
 
 ## Tips and limits
 
+The transcription list refreshes about every 1.5 seconds while jobs are queued
+or transcribing and stops polling when they finish. A slow refresh does not
+start overlapping cycles. Deleting a job waits for server confirmation; an
+older pending refresh cannot put a successfully deleted row back. Returning
+to MIDI Studio shows existing jobs without submitting another transcription.
+
 Transcription is one-way: audio in, a `.mid` file out. There is no path from
 a transcribed (or any other) MIDI file back into music generation.
 
@@ -72,10 +80,22 @@ create here inherit that restriction.
 Mute and solo in the preview only silence the synthesized MIDI playback; the
 original audio track is unaffected and keeps playing under the crossfade.
 
-A transcription job that runs past an hour is stopped automatically.
+Transcription shares the GPU queue with generation and post-processing, one
+job at a time, so it never runs beside a render and slows both down.
+
+A transcription job that runs past an hour is stopped automatically. The hour
+counts from when transcription starts, not from when the job was queued. A job
+that fails or is stopped after it has transcribed some notes keeps them: the
+server saves those notes as a partial `.mid` and the job stays marked failed,
+with the error, after a restart too. Notes still sounding at the moment it
+stopped are left out.
 
 ## Related
 
 - [Library](library.md)
 - [Stem Studio](stem-studio.md)
 - [Model Manager](model-manager.md)
+
+## Release data paths
+
+Release MuScriptor tokens and preserved optional-install files live under `<data folder>/library/muscriptor`, with weights under `library/models/muscriptor` unless overridden. The shipped `ace-midi` stays in the app. Upgrading reuses downloaded weights; preserved optional Python environments may need rebuilding after relocation. See [Data folder and upgrades](../data-folder.md).

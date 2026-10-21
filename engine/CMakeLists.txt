@@ -694,8 +694,9 @@ link_ggml_backends(yue2-train-gemm-precision-test)
 # yue2-clip-non-finite-test: S2d-1 gate 3 (RESEARCH/YUE2_S2D_TOLERANCES.md) --
 # a gradient with one non-finite value must still fail
 # Yue2AitkTrainState::clip_gradients() on both the device sum-of-squares path
-# (default) and the host rollback (YUE2_AITK_CLIP_HOST=1). CPU backend only,
-# no checkpoint needed. See engine/tools/yue2-clip-non-finite-test.cpp.
+# (default) and the host rollback (YUE2_AITK_CLIP_HOST=1) on the CPU backend,
+# and on a CUDA build also the CUDA clip kernels on the GPU. No checkpoint
+# needed. See engine/tools/yue2-clip-non-finite-test.cpp.
 add_executable(yue2-clip-non-finite-test tools/yue2-clip-non-finite-test.cpp)
 target_include_directories(yue2-clip-non-finite-test PRIVATE src)
 target_link_libraries(yue2-clip-non-finite-test PRIVATE yyjson)
@@ -744,6 +745,9 @@ link_ggml_backends(ace-caption)
 # docs/plans/yue2/06-engine-port-plan.md milestone M0. Header-only loader
 # (no acestep-core dependency), same posture as moss-ggml-test.
 add_executable(yue2-probe tools/yue2-probe.cpp)
+add_executable(yue2-vae-lifetime-test tests/test-yue2-vae-lifetime.cpp)
+target_link_libraries(yue2-vae-lifetime-test PRIVATE yyjson)
+link_ggml_backends(yue2-vae-lifetime-test)
 # yue2-nar-graph.h also contains the optional Lua sampler dispatch. The probe
 # includes that header for parity fixtures even though it uses native midpoint.
 target_link_libraries(yue2-probe PRIVATE yyjson luajit)
@@ -957,4 +961,25 @@ add_dependencies(vst-host version)
 # macOS: vst-host also needs Apple frameworks
 if(APPLE)
     target_link_libraries(vst-host PRIVATE ${COCOA_FRAMEWORK} ${COREFOUNDATION_FRAMEWORK})
+endif()
+
+# Embed the long-path manifest in every engine executable, so training and
+# adapter paths past 260 characters open when Windows long paths are enabled.
+if(MSVC)
+    get_property(_hs_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_hs_target IN LISTS _hs_targets)
+        get_target_property(_hs_type ${_hs_target} TYPE)
+        if(_hs_type STREQUAL "EXECUTABLE")
+            target_sources(${_hs_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/long-paths.manifest)
+        endif()
+    endforeach()
+endif()
+
+# Monitor chain unit test (no VST plugins needed). Off by default so it is not
+# part of the ALL build; configure with -DBUILD_TESTING=ON to build and run it.
+option(BUILD_TESTING "Build the engine unit tests" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(test-monitor-chain tests/test-monitor-chain.cpp)
+    add_test(NAME monitor-chain COMMAND test-monitor-chain)
 endif()

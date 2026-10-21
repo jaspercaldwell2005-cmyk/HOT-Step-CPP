@@ -228,6 +228,12 @@ export interface TrainingPreview {
 
 /** Checkpoint preview controls for the YuE2 joint trainer (plan 27). */
 export interface Yue2JointPreviewOptions {
+  /** Music adapter strength for previews. The sound adapter stays at 1. */
+  arScale?: number;
+  /** The Create panel's YuE2 planner/composer sampler settings and CFG
+   *  (yue2Plan*, yue2Sem*, yue2End*, yue2CfgScale), snapshotted by the UI when
+   *  the run starts or a render is asked for. Absent = engine defaults. */
+  sampler?: Record<string, number | string>;
   enabled: boolean;
   /** Steps between preview pauses; 0 with a KL-rung run = one pause per rung. */
   everySteps: number;
@@ -492,6 +498,9 @@ export interface TrainingMetricEvent {
   totalSteps?: number;
   loss?: number;
   lr?: number;
+  /** YuE2 joint: raw planner and cursor cross-entropy, absent on frozen steps. */
+  arCe?: number;
+  cursorCe?: number;
   /** YuE2 joint: the planner's KL to base for this step (the kl stop target). */
   arKl?: number;
   /** YuE2 joint: the decoder's flow loss for this step; the only loss once

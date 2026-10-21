@@ -10,11 +10,12 @@ import { getDb } from '../db/database.js';
 import { yue2Align } from '../services/backends/yue2/client.js';
 import type { Yue2AlignWord } from '../services/backends/yue2/align.js';
 import { COVER_DRIFT_METRIC_VERSION, measureCoverDrift } from '../services/backends/yue2/coverDrift.js';
+import { remeterTwoFourToFourFour } from '../services/backends/yue2/coverScoreTransform.js';
 import { coverScoreDetails, registerCoverWorkflows } from '../services/workflows/coverWorkflow.js';
 import { workflowDocuments } from './workflows.js';
 import { resolveAudioAsset } from '../services/assets/audioAssets.js';
 import { WorkflowError } from '../services/workflows/workflowJobs.js';
-import { TakesError, createBuildSession, deleteBuildTake, generateBuildTakes, getBuildSession, keepBuildTake, undoBuildKeep } from '../services/yue2Takes.js';
+import { TakesError, applyBuildLyrics, applyBuildSettings,cancelBuildTakes, createBuildSession, cropBuildTake, deleteBuildTake, editBuildPlan, generateBuildTakes, getBuildSession, keepBuildTake, lyricsProblem, renderBuildPreview, setBuildTrim, setOccurrenceLyrics, undoBuildKeep } from '../services/yue2Takes.js';
 import { buildEnvelope } from '../services/generation/envelope.js';
 import { yue2RequestForJob } from '../services/backends/yue2/generate.js';
 import type { GenerationJob } from '../services/generation/jobTypes.js';
@@ -108,6 +109,21 @@ export function createYue2CoverRouter(service: CoverService = yue2CoverService, 
     }
   });
 
+  // A preview only: nothing is stored. The studio applies the result as a score
+  // edit, so it has to be approved again before a cover uses it.
+  router.post('/score/remeter', (req: Request, res: Response) => {
+    try {
+      const { abc, pickup } = req.body || {};
+      if (typeof abc !== 'string' || !abc.trim() || typeof pickup !== 'boolean') {
+        throw new CoverRequestError('abc and a boolean pickup are required.');
+      }
+      let result;
+      try { result = remeterTwoFourToFourFour(abc, pickup); }
+      catch (err) { throw new CoverRequestError((err as Error).message, 422); }
+      res.json(result);
+    } catch (err) { fail(res, err); }
+  });
+
   router.post('/sections/review', (req: Request, res: Response) => {
     try { res.json(service.reviewScore(req.body || {})); }
     catch (err) { fail(res, err); }
@@ -120,6 +136,11 @@ export function createYue2CoverRouter(service: CoverService = yue2CoverService, 
 
   router.post('/sections/plan-score', async (req: Request, res: Response) => {
     try { res.json(await service.planScoreSections(req.body || {}, authenticate(req)!)); }
+    catch (err) { fail(res, err); }
+  });
+
+  router.post('/sections/suggest', async (req: Request, res: Response) => {
+    try { res.json(await service.suggestAssignments(req.body || {}, authenticate(req)!)); }
     catch (err) { fail(res, err); }
   });
 
@@ -175,28 +196,79 @@ export function createYue2CoverRouter(service: CoverService = yue2CoverService, 
   const takes = (res: Response, fn: () => unknown) => Promise.resolve().then(fn).then(
     out => { res.json(out); },
     err => { if (err instanceof TakesError) res.status(err.status).json({ error: err.message }); else fail(res, err); });
-  router.post('/build', (req: Request, res: Response) => takes(res, () => {
-    const userId = authenticate(req)!;
-    const params = req.body?.params;
-    if (!params || typeof params !== 'object' || Array.isArray(params)) throw new TakesError('params are required');
+  const buildRequest = (params: Record<string, unknown>, userId: string) => {
     const id = `build-${randomUUID()}`;
     let envelope;
     try { envelope = buildEnvelope(params, userId, id, Date.now()); }
     catch (err) { throw new TakesError((err as Error).message); }
     if (envelope.backendId !== 'yue2') throw new TakesError('Build by section needs the YuE2 backend.');
     const job = { id, userId, envelope, params, attempts: [], status: 'pending' } as unknown as GenerationJob;
-    return createBuildSession(params, yue2RequestForJob(job), userId);
+    return yue2RequestForJob(job);
+  };
+  // `lyrics` is the build's own text, set on the Build page. It replaces the
+  // Prepare lyrics in the session's params and never reaches a dataset.
+  router.post('/build', (req: Request, res: Response) => takes(res, () => {
+    const userId = authenticate(req)!;
+    let params = req.body?.params;
+    if (!params || typeof params !== 'object' || Array.isArray(params)) throw new TakesError('params are required');
+    if (req.body.lyrics !== undefined) {
+      const problem = lyricsProblem(req.body.lyrics);
+      if (problem) throw new TakesError(problem);
+      params = { ...params, lyrics: req.body.lyrics };
+    }
+    return createBuildSession(params, buildRequest(params, userId), userId);
+  }));
+  router.post('/build/lyrics-check', (req: Request, res: Response) => takes(res, () => {
+    const problem = lyricsProblem(req.body?.lyrics);
+    if (problem) throw new TakesError(problem);
+    return { ok: true };
   }));
   router.get('/build/:id', (req: Request, res: Response) =>
     takes(res, () => getBuildSession(String(req.params.id), authenticate(req)!)));
-  router.post('/build/:id/generate', (req: Request, res: Response) =>
-    takes(res, () => generateBuildTakes(String(req.params.id), authenticate(req)!, req.body?.to, req.body?.count)));
+  // `caption` (optional) is these takes' own caption; empty uses the session's.
+  router.post('/build/:id/generate', (req: Request, res: Response) => {
+    const userId = authenticate(req)!;
+    return takes(res, () => generateBuildTakes(String(req.params.id), userId, req.body?.to, req.body?.count, req.body?.revision,
+      req.body?.caption, params => buildRequest(params, userId).style));
+  });
+  router.post('/build/:id/cancel', (req: Request, res: Response) =>
+    takes(res, () => cancelBuildTakes(String(req.params.id), authenticate(req)!)));
   router.post('/build/:id/keep', (req: Request, res: Response) =>
-    takes(res, () => keepBuildTake(String(req.params.id), authenticate(req)!, String(req.body?.take ?? ''))));
+    takes(res, () => keepBuildTake(String(req.params.id), authenticate(req)!, String(req.body?.take ?? ''), req.body?.revision)));
   router.post('/build/:id/undo', (req: Request, res: Response) =>
-    takes(res, () => undoBuildKeep(String(req.params.id), authenticate(req)!, req.body?.section)));
+    takes(res, () => undoBuildKeep(String(req.params.id), authenticate(req)!, req.body?.section, req.body?.revision)));
+  // Cuts the last kept take at codec frame `frame` (null restores it);
+  // `mode` is 'regenerate' or 'advance' when the cut falls inside a section.
+  router.post('/build/:id/crop', (req: Request, res: Response) =>
+    takes(res, () => cropBuildTake(String(req.params.id), authenticate(req)!, String(req.body?.take ?? ''), req.body?.revision, req.body?.frame, req.body?.mode)));
+  // Renders everything kept so far once, for Play build (takes hold only their own part).
+  router.post('/build/:id/preview', (req: Request, res: Response) =>
+    takes(res, () => renderBuildPreview(String(req.params.id), authenticate(req)!)));
+  // Where Save song starts the song: seconds into a first-section take, or null for the top.
+  router.post('/build/:id/trim', (req: Request, res: Response) =>
+    takes(res, () => setBuildTrim(String(req.params.id), authenticate(req)!, String(req.body?.take ?? ''), req.body?.revision, req.body?.seconds ?? null)));
+  router.post('/build/:id/lyrics', (req: Request, res: Response) => {
+    const userId = authenticate(req)!;
+    return takes(res, () => applyBuildLyrics(String(req.params.id), userId, req.body?.revision, req.body?.lyrics,
+      params => buildRequest(params, userId)));
+  });
+  // Unbuilt occurrences' own sung lines: `edits` maps occurrence ids
+  // (o3...) to text, or null to sing the build's lyrics again.
+  router.post('/build/:id/occurrence-lyrics', (req: Request, res: Response) =>
+    takes(res, () => setOccurrenceLyrics(String(req.params.id), authenticate(req)!, req.body?.revision, req.body?.edits)));
+  // Before the first keep: `settings` holds the cover's voices, tempo, key,
+  // keyShift and cfgScale (as params.yue2Cover carries them) and arStrength.
+  router.post('/build/:id/settings', (req: Request, res: Response) => {
+    const userId = authenticate(req)!;
+    return takes(res, () => applyBuildSettings(String(req.params.id), userId, req.body?.revision, req.body?.settings,
+      params => buildRequest(params, userId)));
+  });
+  // The order the next sections are built in: `upcoming` lists source
+  // section ids (s0...) or upcoming occurrence ids (o3...); `finished` ends the song.
+  router.post('/build/:id/plan', (req: Request, res: Response) =>
+    takes(res, () => editBuildPlan(String(req.params.id), authenticate(req)!, req.body?.revision, req.body?.upcoming, req.body?.finished)));
   router.delete('/build/:id/takes/:take', (req: Request, res: Response) =>
-    takes(res, () => deleteBuildTake(String(req.params.id), authenticate(req)!, String(req.params.take))));
+    takes(res, () => deleteBuildTake(String(req.params.id), authenticate(req)!, String(req.params.take), Number(req.query.revision))));
 
   router.post('/transcriptions', async (req: Request, res: Response) => {
     try {

@@ -54,7 +54,20 @@ struct Yue2AitkStackTape {
     // (final_hidden stays empty) for a device consumer such as the AR head rows.
     bool keep_device_final = false;
     const ggml_tensor * device_final = nullptr;
+    // Metal only (fix 5): each layer's packed attention O+LSE from the saving
+    // forward, which that layer's backward recompute copies instead of running
+    // the attention forward again. Valid for this tape's forward only: the
+    // next forward clears it, and the tape never outlives its step's update.
+    ggml_context * attention_ctx = nullptr;
+    ggml_backend_buffer_t attention_buffer = nullptr;
+    std::vector<ggml_tensor *> attention;
+    void clear_attention() {
+        if (attention_buffer) ggml_backend_buffer_free(attention_buffer);
+        if (attention_ctx) ggml_free(attention_ctx);
+        attention_buffer = nullptr; attention_ctx = nullptr; attention.clear();
+    }
     void clear_device() {
+        clear_attention();
         if (device_buffer) ggml_backend_buffer_free(device_buffer);
         if (device_ctx) ggml_free(device_ctx);
         device_buffer = nullptr; device_ctx = nullptr; device_layers.clear(); device_final = nullptr;
@@ -135,6 +148,47 @@ inline bool make_device_tape(ggml_backend_t backend, const Yue2AitkGraphConfig &
     tape->device_tape = true;
     tape->device_saved = save;
     return true;
+}
+// Fix 5: Metal keeps each layer's attention O+LSE from the saving forward for
+// the backward (about 63 MB a layer at S = 7,668). CUDA, CPU and Vulkan keep
+// the recompute and build the same graphs as before. YUE2_AITK_ATTENTION_RECOMPUTE=1
+// restores the recompute on Metal too. It is kept only when the device still
+// has the step's working memory free afterwards (block scratch, the teacher,
+// the head); otherwise recompute, with a warning. Metal oversubscribes instead
+// of failing an allocation, so this reserve, not a failure, is the guard.
+inline bool keep_attention(ggml_backend_t backend) {
+    static const bool recompute = std::getenv("YUE2_AITK_ATTENTION_RECOMPUTE") != nullptr;
+    return !recompute && yue2_aitk_is_metal(backend) && !yue2_aitk_graph::math_attention();
+}
+// 16 GiB covers the whole step: the largest peak footprint measured on an M2 Max
+// (whole-song AR, S = 7,668) was 16.42 GB, retention included (HOTSTEP-346).
+// YUE2_AITK_ATTENTION_RESERVE_MB overrides it (a huge value tests the fallback).
+inline size_t attention_reserve() {
+    static const size_t mb = [] { const char * v = std::getenv("YUE2_AITK_ATTENTION_RESERVE_MB"); return v && *v ? size_t(std::strtoull(v, nullptr, 10)) : size_t(16384); }();
+    return mb << 20;
+}
+inline void make_attention_tape(ggml_backend_t backend, const Yue2AitkGraphConfig & c,
+                                size_t layers, int64_t length, Yue2AitkStackTape * tape) {
+    // Size from the packing helper, on a q of the shape the block passes: [D, S, heads, 1].
+    ggml_init_params p{}; p.mem_size = (layers + 2) * ggml_tensor_overhead() + 4096; p.no_alloc = true;
+    tape->attention_ctx = ggml_init(p);
+    if (tape->attention_ctx) {
+        ggml_init_params qp{}; qp.mem_size = ggml_tensor_overhead() + 256; qp.no_alloc = true;
+        ggml_context * shape = ggml_init(qp);
+        const int64_t n = shape ? ggml_flash_attn_train_nelements(
+            ggml_new_tensor_4d(shape, GGML_TYPE_F32, c.head_dim, length, c.heads, 1)) : 0;
+        if (shape) ggml_free(shape);
+        for (size_t i = 0; n > 0 && i < layers; ++i) tape->attention.push_back(ggml_new_tensor_1d(tape->attention_ctx, GGML_TYPE_F32, n));
+        size_t avail = 0, total = 0;
+        ggml_backend_dev_memory(ggml_backend_get_device(backend), &avail, &total);
+        const size_t need = size_t(n) * sizeof(float) * layers + attention_reserve();
+        if (tape->attention.size() == layers && avail >= need) tape->attention_buffer = ggml_backend_alloc_ctx_tensors(tape->attention_ctx, backend);
+    }
+    if (!tape->attention_buffer) {
+        tape->clear_attention();
+        static bool warned = false;
+        if (!warned) { warned = true; std::fprintf(stderr, "[yue2-aitk] warning: not enough device memory to keep attention for the backward; recomputing it\n"); }
+    }
 }
 inline bool make_prefix_device(ggml_backend_t backend, const Yue2AitkGraphConfig & c, size_t layers,
                                int64_t length, Yue2AitkPrefixHost * prefix) {
@@ -264,6 +318,7 @@ inline bool forward(ggml_backend_t backend, const Yue2AitkModel & model,
     Yue2AitkBlockConstants * constants = shared ? &shared->constants : nullptr;
     const bool device = fast && backend != nullptr && std::getenv("YUE2_AITK_HOST_TAPE") == nullptr;
     if (device && !make_device_tape(backend, c, expert.layers.size(), length, save_tape, tape, error)) return false;
+    if (device && save_tape && keep_attention(backend)) make_attention_tape(backend, c, expert.layers.size(), length, tape);
     std::vector<float> hidden=initial;
     if (device) ggml_backend_tensor_set(tape->device_layers[0], initial.data(), 0, ggml_nbytes(tape->device_layers[0]));
     for (size_t layer=0;layer<expert.layers.size();++layer) {
@@ -283,7 +338,8 @@ inline bool forward(ggml_backend_t backend, const Yue2AitkModel & model,
                 constants,fast?&workspace:nullptr,device_in,device_out,
                 device_capture ? capture_prefix->device->k[layer] : nullptr,
                 device_capture ? capture_prefix->device->v[layer] : nullptr,
-                device && async_blocks(prefix))) return false;
+                device && async_blocks(prefix),
+                tape->attention.empty() ? nullptr : tape->attention[layer])) return false;
         if (!device) hidden=std::move(out.hidden);
         if (capture_prefix && !device_capture) { capture_prefix->keys.push_back(std::move(out.key)); capture_prefix->values.push_back(std::move(out.value)); }
     }
@@ -305,7 +361,7 @@ using StoreGradients=std::function<bool(size_t,const Yue2AitkBlockBackwardHost &
 // accumulate, add) into them directly and `store` is not called.
 using GradientSinks=std::function<const std::vector<ggml_tensor *> *(size_t)>;
 inline bool backward(ggml_backend_t backend,const Yue2AitkModel & model,
-                      const Yue2AitkExpertAdapters & adapters,const Yue2AitkStackTape & tape,
+                      const Yue2AitkExpertAdapters & adapters,Yue2AitkStackTape & tape,
                       const Yue2AitkPrefixHost * prefix,std::vector<float> gradient,
                       const StoreGradients & store,std::string * error=nullptr,
                       const GradientSinks & sinks={},bool accumulate=false) {
@@ -319,6 +375,10 @@ inline bool backward(ggml_backend_t backend,const Yue2AitkModel & model,
         adapters.layers.size()!=expert.layers.size() ||
         (gradient.size()!=size_t(tape.length*c.hidden) && !(device && gradient.empty())))
         return fail(error,"invalid expert backward tape");
+    // The kept attention serves this backward only: free it on every return,
+    // after SyncOnExit (declared later, so destroyed first) has waited for the
+    // blocks reading it, and before the caller's clip and update.
+    struct ReleaseAttention { Yue2AitkStackTape & tape; ~ReleaseAttention() { tape.clear_attention(); } } release_attention{tape};
     Yue2AitkBlockWorkspace workspace;
     SyncOnExit sync_on_exit{backend};
     const Yue2AitkMaskMode mask_mode = tape.nar ? Yue2AitkMaskMode::noncausal : Yue2AitkMaskMode::causal;
@@ -348,7 +408,8 @@ inline bool backward(ggml_backend_t backend,const Yue2AitkModel & model,
                     tape.nar?Yue2AitkMaskMode::noncausal:Yue2AitkMaskMode::causal,&out,canvas.k,canvas.v,
                     prefix?prefix->length:0,error,constants,fast?&workspace:nullptr,
                     tape.device_layers[input_index],tape.device_grad[ping],tape.device_grad[next],
-                    slots,accumulate,async_blocks(prefix))) return false;
+                    slots,accumulate,async_blocks(prefix),
+                    tape.attention.size()==expert.layers.size() ? tape.attention[layer] : nullptr)) return false;
             if (!slots) { YUE2_PROF("state: gradient upload (host checks + H2D)"); if (!store(layer,out,error)) return false; }
             ping = next;
         }

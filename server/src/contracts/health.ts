@@ -24,5 +24,11 @@ export interface HealthResponse {
   engine: {
     ready: boolean;
     bootStatus: string;
+    /** True while the engine is down only because no model is installed yet. */
+    noModels: boolean;
+    /** Compute backend the engine reported loading on; null until its first model load. */
+    backend: 'cuda' | 'vulkan' | 'metal' | 'hip' | 'cpu' | null;
+    /** Raw ggml device name (e.g. "CUDA0"), or null. */
+    device: string | null;
   };
 }

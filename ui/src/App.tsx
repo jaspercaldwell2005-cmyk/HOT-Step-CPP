@@ -12,17 +12,21 @@ import { useAuth } from './context/AuthContext';
 import { GlobalParamsProvider, useGlobalParams } from './context/GlobalParamsContext';
 import { usePersistedState } from './hooks/usePersistedState';
 import { useTheme } from './hooks/useTheme';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { songApi } from './services/api';
+import { useJobProgressWatcher, requestNotifyPermissionFromGesture } from './hooks/useJobProgress';
+import { bridgeEvents } from './queries/sseBridge';
+import { SONG_VIEWS, invalidateSongs, patchLibrary, patchSong, removeSongs, songOptions, songsOptions } from './queries/shell-queue/songs';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { CreatePanel } from './components/create/CreatePanel';
 import { SongList } from './components/library/SongList';
 import { StreamWaveform } from './components/player/StreamWaveform';
 import { mm3StreamEnsureTakes, useMm3StreamAudio } from './stores/mm3StreamStore';
 import { enqueueSimpleGen, useResumeQueue, useAudioGenQueueSelector, clearFinishedFromAudioQueue } from './stores/audioGenQueueStore';
+import { NoModelsBanner } from './components/shared/NoModelsBanner';
 import { RestoredQueueBanner } from './components/shared/RestoredQueueBanner';
 import { AudioQueueMigrationBanner } from './components/shared/AudioQueueMigrationBanner';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
-import { clearRecentSongsCache } from './components/shared/UnifiedRecentSongs';
 import { PostProcessDock } from './components/shared/PostProcessActivity';
 import { ActivitySidebar } from './components/shared/ActivitySidebar';
 import { Player } from './components/player/Player';
@@ -38,6 +42,9 @@ import { MetadataEditorModal } from './components/details/MetadataEditorModal';
 import { CoverArtPromptModal } from './components/library/CoverArtPromptModal';
 import { ImportTracksModal } from './components/library/ImportTracksModal';
 import { Toast, type ToastType } from './components/shared/Toast';
+import { HotkeyHelpModal } from './components/shared/HotkeyHelpModal';
+import { CommandPalette, OPEN_PALETTE_EVENT } from './components/shared/CommandPalette';
+import { useGlobalHotkeys } from './hooks/useGlobalHotkeys';
 import { ConfirmDialog } from './components/shared/ConfirmDialog';
 import { downloadTrack, downloadTrackVersion } from './utils/downloadTrack';
 import { SettingsPanel, type AppSettings, DEFAULT_SETTINGS } from './components/settings/SettingsPanel';
@@ -51,6 +58,8 @@ import { SongBuilder } from './components/song-builder/SongBuilder';
 import { StormPage } from './components/storm/StormPage';
 import { MidiStudio } from './components/midi-studio/MidiStudio';
 import { TrainingStudio } from './components/training-studio/TrainingStudio';
+import { CompareStudio } from './components/compare-studio/CompareStudio';
+import { setPendingCompareSongs } from './services/compareApi';
 import { GlobalParamBar } from './components/global-bar/GlobalParamBar';
 import { InstaGenPanel } from './components/insta-gen/InstaGenPanel';
 import {
@@ -101,6 +110,7 @@ function viewFromUrl(path = window.location.pathname): string {
   if (path.startsWith('/storm')) return 'storm';
   if (path.startsWith('/midi-studio')) return 'midi-studio';
   if (path.startsWith('/training-studio')) return 'training-studio';
+  if (path.startsWith('/compare')) return 'compare-studio';
   if (path.startsWith('/repaint')) return 'repaint';
   if (path.startsWith('/library')) return 'library';
   if (path.startsWith('/settings')) return 'settings';
@@ -132,6 +142,7 @@ function urlForView(view: string): string {
     } catch { /* ignore */ }
     return '/training-studio';
   }
+  if (view === 'compare-studio') return '/compare';
   if (view === 'repaint') return '/repaint';
   if (view === 'library') return '/library';
   if (view === 'settings') return '/settings';
@@ -261,16 +272,33 @@ const ABMiniBar: React.FC = () => {
 };
 
 /** Extract the source tag from a song's generation params */
+/** A stable empty library, so memo and callback deps don't churn before load. */
+const NO_SONGS: Song[] = [];
+
 function getSongSource(song: Song): string {
   return (song.generationParams as any)?.source || (song.generation_params as any)?.source || 'create';
 }
 
 /** Inner app content — must be rendered inside GlobalParamsProvider */
+// Tab title "(N) 43% · HOT-Step" + done notification while the tab is hidden.
+// Own component so the queue subscription re-renders only this, not AppContent.
+const JobProgressWatcher: React.FC = () => {
+  const { t } = useTranslation();
+  const doneBody = useCallback((name: string) => t('jobs.doneBody', { name }), [t]);
+  useJobProgressWatcher(t('jobs.doneTitle'), doneBody);
+  return null;
+};
+
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
-  const { token, isLoading } = useAuth();
+  // sessionEpoch re-renders this component when the auth-scoped keys move.
+  const { token, sessionEpoch, isLoading } = useAuth();
+  void sessionEpoch;
+  const queryClient = useQueryClient();
   const [activeView, setActiveView] = useState(() => viewFromUrl());
-  const [songs, setSongs] = useState<Song[]>([]);
+  const songsQuery = useQuery({ ...songsOptions(), enabled: !!token });
+  const songs = songsQuery.data?.songs ?? NO_SONGS;
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
 
   // Resizable panel widths (persisted)
@@ -383,9 +411,7 @@ const AppContent: React.FC = () => {
             await new Promise(r => setTimeout(r, 5000));
             if (cancelled) return;
             try {
-              const songRes = await fetch(`/api/songs/${currentTrack.id}`);
-              const songData = await songRes.json();
-              const s = songData.song || songData;
+              const { song: s } = await queryClient.query({ ...songOptions(currentTrack.id), staleTime: 0 });
               const ddUrl = s.disco_data_url || '';
               if (ddUrl) {
                 console.log(`[Disco] Disco data ready for ${currentTrack.id}: ${ddUrl}`);
@@ -400,7 +426,7 @@ const AppContent: React.FC = () => {
       })();
       return () => { cancelled = true; };
     }
-  }, [currentTrack?.id, currentTrack?.discoDataUrl, settings.discoKickExtract]);
+  }, [currentTrack?.id, currentTrack?.discoDataUrl, settings.discoKickExtract, queryClient]);
 
   // Wrap seek to also sync kick stem
   const handleSeek = useCallback((time: number) => {
@@ -511,11 +537,11 @@ const AppContent: React.FC = () => {
     }
   }, [discoMode, settings.discoKickExtract]);
 
-  // Song created callback — add to library + trigger sidebar refresh
-  const [songCreatedCount, setSongCreatedCount] = useState(0);
+  // Song created callback — show it in the library now, then refetch every
+  // song view (library, details, recent feeds).
   const handleSongCreated = useCallback((song: Song) => {
-    setSongs(prev => [song, ...prev.filter(s => s.id !== song.id)]);
-    setSongCreatedCount(c => c + 1);
+    patchLibrary(queryClient, prev => [song, ...prev.filter(s => s.id !== song.id)]);
+    void invalidateSongs(queryClient);
 
     // Auto-extract drum stems + disco data for disco mode if setting enabled
     if (settings.discoKickExtract && song.id && !song.disco_data_url) {
@@ -529,7 +555,7 @@ const AppContent: React.FC = () => {
         })
         .catch(err => console.warn('[Disco] Stem extraction failed:', err));
     }
-  }, [settings.discoKickExtract]);
+  }, [settings.discoKickExtract, queryClient]);
 
   // Play a song from the library (used by SongList, RightSidebar)
   const playSong = useCallback((song: Song) => {
@@ -545,6 +571,20 @@ const AppContent: React.FC = () => {
     setShowRightSidebar(true);
     playFromList(songToTrack(song), songs.map(songToTrack), 'library');
   }, [songs]);
+
+  // Notification click: open the finished song in the details panel.
+  useEffect(() => {
+    const onOpen = async (e: Event) => {
+      const songId = (e as CustomEvent).detail?.songId as string | undefined;
+      if (!songId) return;
+      try {
+        const { song } = await songApi.get(songId);
+        if (song) { setSelectedSong(song); setShowRightSidebar(true); }
+      } catch { /* song gone */ }
+    };
+    window.addEventListener('hotstep:open-song', onOpen);
+    return () => window.removeEventListener('hotstep:open-song', onOpen);
+  }, []);
 
   // Shared audio generation queue — resume on mount, subscribe only to active count
   useResumeQueue(token || undefined);
@@ -630,21 +670,17 @@ const AppContent: React.FC = () => {
   }, [mm3StreamState.jobId, mm3StreamState.chunks, mm3StreamState.playing, streamingSong]);
 
 
-  // Load songs on mount
-  useEffect(() => {
-    if (!token) return;
-    songApi.list(token)
-      .then(({ songs }) => setSongs(songs))
-      .catch(err => console.error('[App] Failed to load songs:', err));
-  }, [token]);
-
-  // Refresh songs (kept for future use — e.g. after external DB changes)
-  // const refreshSongsList = useCallback(() => {
-  //   if (!token) return;
-  //   songApi.list(token)
-  //     .then(({ songs }) => setSongs(songs))
-  //     .catch(err => console.error('[App] Refresh failed:', err));
-  // }, [token]);
+  // The library is the shared songs query above. When the server comes back
+  // after a drop (the shared /api/logs stream reopens), refetch every song
+  // view: songs may have changed while this tab could not hear about it. The
+  // log lines themselves are not parsed here.
+  useEffect(() => bridgeEvents(queryClient, {
+    url: '/api/logs',
+    reconnect: true,
+    parse: () => undefined,
+    map: () => undefined,
+    reconnectInvalidate: SONG_VIEWS,
+  }), [queryClient]);
 
   // Global params from context
   const globalParams = useGlobalParams();
@@ -652,6 +688,8 @@ const AppContent: React.FC = () => {
   // Handle generation — merges content params (from CreatePanel) with global engine params (from context)
   const handleGenerate = useCallback((contentParams: Partial<GenerationParams>, contentIntent?: CreateIntent) => {
     if (!token) return;
+    // First Generate click is a user gesture: ask once for done notifications.
+    void requestNotifyPermissionFromGesture();
     // Merge: global engine params + content-specific params + settings
     const engineParams = globalParams.getGlobalParams();
     const enrichedParams = {
@@ -679,11 +717,24 @@ const AppContent: React.FC = () => {
   // Handle delete
   const handleDelete = useCallback(async (song: Song) => {
     if (!token) return;
-    await songApi.delete(song.id, token);
-    setSongs(prev => prev.filter(s => s.id !== song.id));
+    await songApi.delete(song.id);
+    void removeSongs(queryClient, [song.id]);
     if (selectedSong?.id === song.id) setSelectedSong(null);
     showToast(`Deleted "${song.title}"`, 'success');
-  }, [token, selectedSong]);
+  }, [token, selectedSong, queryClient]);
+
+  // Global desktop hotkeys (see utils/hotkeys.ts); "?" opens the cheat sheet.
+  const [showHotkeyHelp, setShowHotkeyHelp] = useState(false);
+  const openHotkeyHelp = useCallback(() => setShowHotkeyHelp(true), []);
+  const closeHotkeyHelp = useCallback(() => setShowHotkeyHelp(false), []);
+  const [showPalette, setShowPalette] = useState(false);
+  const openPalette = useCallback(() => setShowPalette(true), []);
+  const closePalette = useCallback(() => setShowPalette(false), []);
+  useEffect(() => {
+    window.addEventListener(OPEN_PALETTE_EVENT, openPalette);
+    return () => window.removeEventListener(OPEN_PALETTE_EVENT, openPalette);
+  }, [openPalette]);
+  useGlobalHotkeys(openHotkeyHelp, openPalette);
 
   // Handle bulk delete
   const handleBulkDelete = useCallback((ids: string[]) => {
@@ -696,9 +747,9 @@ const AppContent: React.FC = () => {
       onConfirm: async () => {
         setConfirmDialog(null);
         try {
-          await songApi.bulkDelete(ids, token);
+          await songApi.bulkDelete(ids);
           const idSet = new Set(ids);
-          setSongs(prev => prev.filter(s => !idSet.has(s.id)));
+          void removeSongs(queryClient, ids);
           if (selectedSong && idSet.has(selectedSong.id)) setSelectedSong(null);
           showToast(`Deleted ${ids.length} track${ids.length !== 1 ? 's' : ''}`, 'success');
         } catch (err: any) {
@@ -706,7 +757,7 @@ const AppContent: React.FC = () => {
         }
       },
     });
-  }, [token, selectedSong]);
+  }, [token, selectedSong, queryClient]);
 
   // Reuse handler
   const [reuseData, setReuseData] = useState<{ song: Song; timestamp: number } | null>(null);
@@ -728,18 +779,17 @@ const AppContent: React.FC = () => {
 
   // Song update handler
   const handleSongUpdate = useCallback((updatedSong: Song) => {
-    setSongs(prev => prev.map(s => s.id === updatedSong.id ? updatedSong : s));
+    patchLibrary(queryClient, prev => prev.map(s => s.id === updatedSong.id ? updatedSong : s));
+    void invalidateSongs(queryClient);
     if (selectedSong?.id === updatedSong.id) setSelectedSong(updatedSong);
-  }, [selectedSong]);
+  }, [selectedSong, queryClient]);
 
   // Listen for cover art completion events (fired by SongList context menu)
   useEffect(() => {
     const handler = (e: Event) => {
       const { songId, coverUrl } = (e as CustomEvent).detail;
       if (!songId || !coverUrl) return;
-      setSongs(prev => prev.map(s =>
-        s.id === songId ? { ...s, coverUrl, cover_url: coverUrl } : s
-      ));
+      void patchSong(queryClient, songId, { coverUrl, cover_url: coverUrl });
       // Also update selected song if it's the one that got cover art
       setSelectedSong(prev =>
         prev?.id === songId ? { ...prev, coverUrl, cover_url: coverUrl } as Song : prev
@@ -747,7 +797,7 @@ const AppContent: React.FC = () => {
     };
     window.addEventListener('cover-art-updated', handler);
     return () => window.removeEventListener('cover-art-updated', handler);
-  }, []);
+  }, [queryClient]);
 
   // Listen for post-processing completion (fired by postProcessStore after a
   // "Run Post-Processing" finishes). The song now has a mastered file, which
@@ -756,11 +806,7 @@ const AppContent: React.FC = () => {
     const handler = (e: Event) => {
       const { songId, masteredAudioUrl } = (e as CustomEvent).detail;
       if (!songId || !masteredAudioUrl) return;
-      setSongs(prev => prev.map(s =>
-        s.id === songId
-          ? { ...s, masteredAudioUrl, mastered_audio_url: masteredAudioUrl }
-          : s
-      ));
+      void patchSong(queryClient, songId, { masteredAudioUrl, mastered_audio_url: masteredAudioUrl });
       setSelectedSong(prev =>
         prev?.id === songId
           ? { ...prev, masteredAudioUrl, mastered_audio_url: masteredAudioUrl } as Song
@@ -769,16 +815,14 @@ const AppContent: React.FC = () => {
     };
     window.addEventListener('song-postprocessed', handler);
     return () => window.removeEventListener('song-postprocessed', handler);
-  }, []);
+  }, [queryClient]);
 
   // ...and the reverse, when a processed version is thrown away.
   useEffect(() => {
     const handler = (e: Event) => {
       const { songId } = (e as CustomEvent).detail || {};
       if (!songId) return;
-      setSongs(prev => prev.map(s =>
-        s.id === songId ? { ...s, masteredAudioUrl: '', mastered_audio_url: '' } : s
-      ));
+      void patchSong(queryClient, songId, { masteredAudioUrl: '', mastered_audio_url: '' });
       setSelectedSong(prev =>
         prev?.id === songId
           ? { ...prev, masteredAudioUrl: '', mastered_audio_url: '' } as Song
@@ -787,7 +831,7 @@ const AppContent: React.FC = () => {
     };
     window.addEventListener('song-postprocess-reverted', handler);
     return () => window.removeEventListener('song-postprocess-reverted', handler);
-  }, []);
+  }, [queryClient]);
 
   // Listen for song-created events (fired by audioGenQueueStore on completion)
   // This covers Lyric Studio, Cover Studio, and resumed queue items.
@@ -804,7 +848,7 @@ const AppContent: React.FC = () => {
   // Rename handler — PATCH title to server + update local state
   const handleRename = useCallback(async (song: Song, newTitle: string) => {
     try {
-      const { song: updated } = await songApi.update(song.id, { title: newTitle }, token!);
+      const { song: updated } = await songApi.update(song.id, { title: newTitle });
       const normalized = { ...song, ...updated, title: newTitle };
       handleSongUpdate(normalized);
     } catch (err: any) {
@@ -855,13 +899,12 @@ const AppContent: React.FC = () => {
             settings={settings}
             onSettingsChange={setSettings}
             onNukeComplete={() => {
-              setSongs([]);
+              patchLibrary(queryClient, () => []);
+              void invalidateSongs(queryClient);
               setSelectedSong(null);
-              // Queue + Recent Songs live outside library state: the queue is a
-              // persisted singleton store, Recent Songs a module-level cache —
-              // both survive the nuke unless explicitly cleared.
+              // The queue is a persisted singleton store outside the song
+              // cache, so it survives the nuke unless explicitly cleared.
               clearFinishedFromAudioQueue();
-              clearRecentSongsCache();
             }}
           />
         </DiscoPulseWrapper>
@@ -920,6 +963,14 @@ const AppContent: React.FC = () => {
       return (
         <DiscoPulseWrapper hue={DISCO.trainingStudio} className="flex-1 overflow-hidden">
           <TrainingStudio />
+        </DiscoPulseWrapper>
+      );
+    }
+
+    if (activeView === 'compare-studio') {
+      return (
+        <DiscoPulseWrapper hue={DISCO.playlist} className="flex-1 overflow-hidden">
+          <CompareStudio />
         </DiscoPulseWrapper>
       );
     }
@@ -1073,6 +1124,25 @@ const AppContent: React.FC = () => {
               onPlay={playSong}
               onDelete={handleDelete}
               onBulkDelete={handleBulkDelete}
+              onCompare={(ids) => { setPendingCompareSongs(ids); navigateTo('compare-studio'); }}
+              onExportZip={async (ids) => {
+                try {
+                  const res = await fetch('/api/songs/export-zip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                    body: JSON.stringify({ ids }),
+                  });
+                  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
+                  const blob = await res.blob();
+                  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || 'hotstep-library.zip';
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+                  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+                } catch (e) {
+                  showToast(t('library.exportZipFailed', 'Zip export failed: {{error}}', { error: (e as Error).message }), 'error');
+                }
+              }}
               onSelect={(s) => { setSelectedSong(s); setShowRightSidebar(true); }}
               onReuse={handleReuse} onSendToCover={handleSendToCover} onEditMetadata={handleEditMetadata}
               onDownload={handleDownload}
@@ -1145,10 +1215,24 @@ const AppContent: React.FC = () => {
     }
 
     // Default: create view
+    // Layout: side-by-side on wide landscape, stacked vertically on narrow (<1024px)
+    // and on portrait screens >= 1024px (e.g. 1080x1920 at 100%).
     return (
-      <div className="flex flex-1 overflow-hidden">
-        {/* Create Panel — resizable */}
-        <DiscoPulseWrapper hue={DISCO.createPanel} className="flex-shrink-0 h-full border-r border-zinc-200 dark:border-white/5" style={{ width: createPanelWidth }}>
+      <div className="flex flex-1 min-w-0 min-h-0
+        min-[1024px]:flex-row max-[1023px]:flex-col
+        min-[1024px]:overflow-clip max-[1023px]:overflow-visible
+        portrait-wide:flex-col
+        portrait-wide:overflow-visible">
+        {/* Create Panel — resizable on wide landscape, full-width on narrow/portrait.
+            Tailwind's ! prefix generates !important which overrides inline style. */}
+        <DiscoPulseWrapper
+          hue={DISCO.createPanel}
+          className="flex-shrink-0 min-w-0 border-zinc-200 dark:border-white/5
+            min-[1024px]:h-full min-[1024px]:border-r
+            max-[1023px]:!w-full max-[1023px]:border-b max-[1023px]:h-auto max-[1023px]:border-r-0
+            portrait-wide:!w-full portrait-wide:border-b portrait-wide:border-r-0 portrait-wide:h-auto"
+          style={{ width: createPanelWidth }}
+        >
           <CreatePanel
             onGenerate={handleGenerate}
             activeJobCount={activeJobCount}
@@ -1156,9 +1240,11 @@ const AppContent: React.FC = () => {
           />
         </DiscoPulseWrapper>
 
-        {/* Left resize handle */}
+        {/* Left resize handle — hidden on narrow and portrait */}
         <div
-          className="flex-shrink-0 w-1.5 h-full cursor-col-resize group z-20 flex items-center hover:bg-pink-500/20 active:bg-pink-500/30 transition-colors"
+          className="flex-shrink-0 w-1.5 cursor-col-resize group z-20 flex items-center hover:bg-pink-500/20 active:bg-pink-500/30 transition-colors
+            min-[1024px]:h-full max-[1023px]:hidden
+            portrait-wide:hidden"
           onMouseDown={(e) => {
             e.preventDefault();
             const startX = e.clientX;
@@ -1221,12 +1307,13 @@ const AppContent: React.FC = () => {
         </DiscoPulseWrapper>
 
 
-        {/* Right Sidebar — resizable */}
+        {/* Right Sidebar — resizable; hidden on narrow / portrait stacked layout */}
         {showRightSidebar && selectedSong && (
           <>
             {/* Right resize handle */}
             <div
-              className="flex-shrink-0 w-1.5 h-full cursor-col-resize group z-20 flex items-center hover:bg-pink-500/20 active:bg-pink-500/30 transition-colors"
+              className="flex-shrink-0 w-1.5 h-full cursor-col-resize group z-20 flex items-center hover:bg-pink-500/20 active:bg-pink-500/30 transition-colors
+                max-[1023px]:hidden portrait-wide:hidden"
               onMouseDown={(e) => {
                 e.preventDefault();
                 const startX = e.clientX;
@@ -1250,7 +1337,8 @@ const AppContent: React.FC = () => {
               <div className="w-0.5 h-8 rounded-full bg-zinc-600 group-hover:bg-pink-400 transition-colors" />
             </div>
             <DiscoPulseWrapper hue={DISCO.rightSidebar}
-              className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5"
+              className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5
+                max-[1023px]:hidden portrait-wide:hidden"
               style={{ width: rightSidebarWidth }}
             >
               <RightSidebar
@@ -1271,21 +1359,28 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-suno text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-all duration-300">
-      {/* Global Parameter Bar — full width, above everything */}
-      <GlobalParamBar />
+    <div className="flex flex-col h-[100dvh] bg-white dark:bg-suno text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-all duration-300">
+      {/* Global Parameter Bar — full width, above everything.
+          The mobile compact row (hamburger + Settings) lives inside
+          GlobalParamBar so both desktop and mobile bars share the same
+          backdrop and z-level. */}
+      <JobProgressWatcher />
+      <GlobalParamBar onOpenMobileNav={() => setMobileNavOpen(true)} />
 
       {/* Asks before running a generation queue restored from a previous
           session, rather than starting it unattended (issue #100). Renders
           nothing when there is nothing waiting. */}
+      <NoModelsBanner />
       <RestoredQueueBanner />
       <AudioQueueMigrationBanner />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 min-h-0 flex overflow-clip">
         <DiscoPulseWrapper hue={DISCO.sidebar}>
         <Sidebar
           activeView={activeView}
           onViewChange={navigateTo}
+          mobileOpen={mobileNavOpen}
+          onMobileClose={() => setMobileNavOpen(false)}
           onQuit={() => {
             setConfirmDialog({
               title: t('app.quitDialog.title'),
@@ -1322,8 +1417,8 @@ const AppContent: React.FC = () => {
         {/* Left stack — everything the activity column does NOT cover. The
             player lives in here rather than spanning the window, so the
             column runs the full height and the transport stops at its edge. */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <main className="flex-1 flex overflow-hidden relative">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-clip">
+        <main className="flex-1 min-w-0 min-h-0 flex min-[1024px]:overflow-clip max-[1023px]:overflow-y-auto portrait-wide:overflow-y-auto relative">
           <ErrorBoundary resetKey={activeView}>
             {renderContent()}
           </ErrorBoundary>
@@ -1441,7 +1536,7 @@ const AppContent: React.FC = () => {
             every view, so the queue and the engine log are never more than a
             glance away regardless of which studio is open. */}
         <div
-          className="flex-shrink-0 w-1.5 h-full cursor-col-resize group z-20 flex items-center hover:bg-pink-500/20 active:bg-pink-500/30 transition-colors"
+          className="flex-shrink-0 w-1.5 h-full cursor-col-resize group z-20 flex items-center hover:bg-pink-500/20 active:bg-pink-500/30 transition-colors max-[1023px]:hidden portrait-wide:hidden"
           onMouseDown={(e) => {
             e.preventDefault();
             const startX = e.clientX;
@@ -1464,13 +1559,12 @@ const AppContent: React.FC = () => {
           <div className="w-0.5 h-8 rounded-full bg-zinc-600 group-hover:bg-pink-400 transition-colors" />
         </div>
         <DiscoPulseWrapper hue={DISCO.activity}
-          className="h-full flex-shrink-0 border-l border-zinc-200 dark:border-white/5 overflow-hidden"
+          className="h-full flex-shrink-0 border-l border-zinc-200 dark:border-white/5 overflow-hidden max-[1023px]:hidden portrait-wide:hidden"
           style={{ width: activitySidebarWidth }}
         >
           <ActivitySidebar
             source={ACTIVITY_SOURCE[activeView]}
             showToast={showToast}
-            refreshKey={songCreatedCount}
             compact={activitySidebarWidth < 380}
             showTerminal
           />
@@ -1515,6 +1609,24 @@ const AppContent: React.FC = () => {
       </div>
 
       {/* Modals */}
+      {showHotkeyHelp && <HotkeyHelpModal onClose={closeHotkeyHelp} />}
+      {showPalette && (
+        <CommandPalette
+          onClose={closePalette}
+          onNavigate={navigateTo}
+          songs={songs}
+          onPickSong={(id) => {
+            const song = songs.find(s => s.id === id);
+            if (song) {
+              navigateTo('library');
+              playFromList(songToTrack(song), songs.map(songToTrack), 'library');
+              setSelectedSong(song);
+            } else {
+              navigateTo('library');
+            }
+          }}
+        />
+      )}
       <Toast
         message={toast.message}
         type={toast.type}
@@ -1542,7 +1654,6 @@ const AppContent: React.FC = () => {
       {metadataEditSong && token && (
         <MetadataEditorModal
           song={metadataEditSong}
-          token={token}
           onClose={() => setMetadataEditSong(null)}
           onSaved={(s) => { handleSongUpdate(s); setMetadataEditSong(null); }}
         />

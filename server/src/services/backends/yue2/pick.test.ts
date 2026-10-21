@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   yue2ResolvePick, yue2PickFromModels, yue2CoverFromSubmission, yue2CoverPickBase,
+  yue2PlanStackFrom, yue2PlanScaleDiffers,
   type Yue2PersistedSelection,
 } from './index.js';
 import { yue2CoalesceKey } from './generate.js';
@@ -74,6 +75,20 @@ test('the pick survives the trip through envelope.models', () => {
   assert.deepEqual(yue2PickFromModels(models), pick);
 });
 
+test('planner strength: travels with the pick, plans at its own strength, and clears to the master', () => {
+  const pick = yue2ResolvePick({ yue2Pick: { lmAdapterNarScalePlan: 0.4 } }, defaults);
+  assert.equal(pick.adapters.nar.scales.plan, 0.4);
+  assert.equal(yue2PlanScaleDiffers(pick.adapters), true);
+  assert.equal(yue2PlanStackFrom(pick.adapters)[0].scales.global, 0.4);
+  assert.equal(pick.adapters.nar.scales.global, 0.8);  // the composer keeps the master
+  assert.equal(yue2PickFromModels({ lm_adapter_nar: fileA, lm_adapter_nar_scale: '0.8', lm_adapter_nar_scale_plan: '0.4' })
+    .adapters.nar.scales.plan, 0.4);
+  const cleared = yue2ResolvePick({ yue2Pick: { lmAdapterNarScalePlan: '' } }, { ...defaults, adapters: pick.adapters });
+  assert.equal(cleared.adapters.nar.scales.plan, undefined);
+  assert.equal(yue2PlanScaleDiffers(defaults.adapters), false);
+  assert.equal(yue2PlanStackFrom(defaults.adapters)[0].scales.global, 0.8);
+});
+
 test('only jobs with the same pick coalesce', () => {
   const req: Yue2SynthRequest = { style: 's', cot: 'full', vae_variant: 'standard' } as Yue2SynthRequest;
   const job = (models: Record<string, string>) =>
@@ -117,9 +132,12 @@ test('the captured VAE reaches the request', async () => {
   const { mapYue2Params } = await import('./generate.js');
   const pick = { ...defaults, vae_variant: 'legacy' };
   assert.equal(mapYue2Params({ caption: 'folk' }, pick).req.vae_variant, 'legacy');
-  // The per-request VAE select is folded into the pick at submit.
-  assert.equal(yue2ResolvePick({ yue2VaeVariant: 'legacy' }, defaults).vae_variant, 'legacy');
-  assert.equal(yue2ResolvePick({ yue2VaeVariant: 'legacy', yue2Pick: { vae: 'standard' } }, defaults).vae_variant, 'standard');
+  // The model picker is the only VAE control: a job's own yue2Pick, else the
+  // saved pick. A stale yue2VaeVariant from old saved settings never wins.
+  const saved = { ...defaults, vae_variant: 'dec2x' };
+  assert.equal(yue2ResolvePick({ yue2VaeVariant: 'standard' }, saved).vae_variant, 'dec2x');
+  assert.equal(mapYue2Params({ caption: 'folk' }, yue2ResolvePick({ yue2VaeVariant: 'standard' }, saved)).req.vae_variant, 'dec2x');
+  assert.equal(yue2ResolvePick({ yue2VaeVariant: 'legacy', yue2Pick: { vae: 'dec2x' } }, defaults).vae_variant, 'dec2x');
 });
 
 test('the captured lm_type reaches the request', async () => {
@@ -217,6 +235,13 @@ test('a cover submission rejects a silent Vocal score', async () => {
   const { yue2Backend } = await import('./index.js');
   assert.throws(() => yue2Backend.resolveRequest({ caption: 'c',
     yue2Cover: { sourceId: 's' }, yue2Abc: 'X:1\nV: Vocal\nZ4|z4|\nV: Ins\nC4|' }),
+  /The transcriber heard no melody in this source/);
+});
+
+test('a vocal-only cover of an instrumental-only score is rejected after the transform', async () => {
+  const { yue2Backend } = await import('./index.js');
+  assert.throws(() => yue2Backend.resolveRequest({ caption: 'c',
+    yue2Cover: { sourceId: 's', voices: 'vocal' }, yue2Abc: 'X:1\nV: Ins\nK:C\nV: Ins\nC4|' }),
   /The transcriber heard no melody in this source/);
 });
 

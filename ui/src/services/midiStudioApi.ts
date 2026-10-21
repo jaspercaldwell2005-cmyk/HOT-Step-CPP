@@ -1,9 +1,12 @@
+import { apiClient, type ReadOptions } from './httpClient';
 // midiStudioApi.ts — API client for MIDI Studio (audio → MIDI transcription)
 //
 // Communicates with Node server /api/midi-studio endpoints, which run
 // MuScriptor (Kyutai & Mirelo) in a server-managed Python venv.
 
 const API_BASE = '/api/midi-studio';
+/** Path prefix for apiClient calls (the client already adds `/api`). */
+const P = '/midi-studio';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -33,6 +36,7 @@ export interface MidiJobProgress {
   noteCount?: number;
   error?: string;
   gated?: boolean;
+  partial?: boolean;
 }
 
 export interface MidiJobSummary {
@@ -49,6 +53,8 @@ export interface MidiJobSummary {
   error?: string;
   /** Failure looks like gated-model / HF auth trouble */
   gated?: boolean;
+  /** Failed, but the notes decoded before the failure were saved as a .mid */
+  partial?: boolean;
   /** chunk progress — present on in-flight jobs */
   chunksDone?: number;
   chunksTotal?: number;
@@ -96,40 +102,26 @@ export interface TranscribeParams {
   model: MuscriptorModel;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-async function jsonOrThrow<T>(res: Response, what: string): Promise<T> {
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-    throw new Error(err.error || `${what} failed: ${res.status}`);
-  }
-  return res.json();
-}
-
 // ── API Functions ────────────────────────────────────────────────────────
 
 /** Get MuScriptor install/environment status. */
-export async function getMidiStatus(): Promise<MidiStudioStatus> {
-  return jsonOrThrow(await fetch(`${API_BASE}/status`), 'Status');
+export async function getMidiStatus(opts?: ReadOptions): Promise<MidiStudioStatus> {
+  return apiClient.get<MidiStudioStatus>(`${P}/status`, opts);
 }
 
 /** Save (or clear, with '') the Hugging Face read token for gated weights. */
 export async function saveHfToken(token: string): Promise<void> {
-  await jsonOrThrow(await fetch(`${API_BASE}/hf-token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
-  }), 'Save token');
+  await apiClient.post(`${P}/hf-token`, { token });
 }
 
 /** Begin downloading a model's gated weights. Poll getMidiStatus() for progress. */
 export async function startModelDownload(model: MuscriptorModel): Promise<void> {
-  await jsonOrThrow(await fetch(`${API_BASE}/models/${model}/download`, { method: 'POST' }), 'Download');
+  await apiClient.post(`${P}/models/${model}/download`);
 }
 
 /** Poll a transcription job's progress. */
-export async function getMidiProgress(jobId: string): Promise<MidiJobProgress> {
-  return jsonOrThrow(await fetch(`${API_BASE}/${jobId}/progress`), 'Progress');
+export async function getMidiProgress(jobId: string, opts?: ReadOptions): Promise<MidiJobProgress> {
+  return apiClient.get<MidiJobProgress>(`${P}/${jobId}/progress`, opts);
 }
 
 /** SSE URL streaming live note events for an in-flight job (Phase 6 UI). */
@@ -139,28 +131,23 @@ export function getMidiStreamUrl(jobId: string): string {
 
 /** Queue a transcription job. Returns the job ID. */
 export async function submitTranscription(params: TranscribeParams): Promise<string> {
-  const res = await fetch(`${API_BASE}/transcribe`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
-  const data = await jsonOrThrow<{ id: string }>(res, 'Transcription');
+  const data = await apiClient.post<{ id: string }>(`${P}/transcribe`, params);
   return data.id;
 }
 
 /** Fetch the parsed note data for the piano-roll preview. */
-export async function getMidiNotes(jobId: string): Promise<ParsedMidi> {
-  return jsonOrThrow(await fetch(`${API_BASE}/${jobId}/notes`), 'Notes');
+export async function getMidiNotes(jobId: string, opts?: ReadOptions): Promise<ParsedMidi> {
+  return apiClient.get<ParsedMidi>(`${P}/${jobId}/notes`, opts);
 }
 
 /** List all transcription jobs (newest first). */
-export async function listMidiJobs(): Promise<MidiJobSummary[]> {
-  return jsonOrThrow(await fetch(`${API_BASE}/jobs`), 'List jobs');
+export async function listMidiJobs(opts?: ReadOptions): Promise<MidiJobSummary[]> {
+  return apiClient.get<MidiJobSummary[]>(`${P}/jobs`, opts);
 }
 
 /** Cancel and/or delete a job. */
 export async function deleteMidiJob(jobId: string): Promise<void> {
-  await jsonOrThrow(await fetch(`${API_BASE}/${jobId}`, { method: 'DELETE' }), 'Delete');
+  await apiClient.delete(`${P}/${jobId}`);
 }
 
 /** Direct URL for downloading the .mid file of a completed job. */

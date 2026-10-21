@@ -245,3 +245,33 @@ test('joint alone trains on prepared inputs and refuses missing preparation befo
     assert.deepEqual(g.started[0].body, { steps: 7 });
   } finally { g.cleanup(); }
 });
+
+test('every method keeps a -14 LUFS cache; a joint chain re-cuts any other level at -14, direct Start trains on it as cut', async () => {
+  const fixed = (stages: Yue2PreparationPayload['stages'], key: string) => {
+    const s = snapshot(stages, 'train-after-preparation', key);
+    s.payload.lyricTiming = false;
+    s.payload.recipes = { joint: { version: 1, overrides: { method: 'fixed-recipe' } } };
+    return s;
+  };
+  const cutAt = (lufs: number) => {
+    const a = artifacts();
+    a.preprocess = { done: true, captionModeOk: true, loudnessLufs: lufs };
+    a.tokenize.done = true; a.sheet.done = true;
+    return a;
+  };
+  const kept = fixture({ artifacts: cutAt(-14) });
+  try {
+    const run = await kept.runner.start(fixed(['latents', 'codes', 'sheet', 'joint'], 'kept'), { joint: {} });
+    await until(() => kept.runner.get(run.id)?.status === 'done');
+    assert.deepEqual(kept.started.map(x => x.stage), ['joint']);
+  } finally { kept.cleanup(); }
+  const f = fixture({ artifacts: cutAt(0) });
+  try {
+    const direct = await f.runner.start(fixed(['joint'], 'direct'), { joint: {} });
+    await until(() => f.runner.get(direct.id)?.status === 'done');
+    assert.deepEqual(f.started.map(x => x.stage), ['joint']);
+    const run = await f.runner.start(fixed(['latents', 'codes', 'sheet', 'joint'], 'chain'), { joint: {} });
+    await until(() => f.runner.get(run.id)?.status === 'done');
+    assert.deepEqual(f.started[1], { stage: 'latents', worker: 'local', workerUrl: null, body: { captionMode: 'yue2', loudnessLufs: -14 } });
+  } finally { f.cleanup(); }
+});

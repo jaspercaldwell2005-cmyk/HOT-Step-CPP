@@ -228,7 +228,7 @@ values: 120 BPM, 120 seconds, C major, 4/4.
 | Chain-of-Thought Caption | toggle | on | When on, the LM rewrites your caption into a fuller style description before generation. When off, your caption is used as typed. |
 | Temperature | 0 to 2 | 0.8 | Higher is more varied, lower is more predictable. |
 | CFG Scale | 0 to 10 | 2.2 | Guidance strength for the LM itself. |
-| Top-K | 0 to 200 | 0 | Limits sampling to the K most likely tokens. 0 turns it off. |
+| Top-K | 0 to 200 | 0 | Limits sampling to the K most likely tokens. 0 turns it off. (YuE2's Composer Top-K is separate: 0 is unlimited there, and unlimited with a temperature above 1.0 is clamped to 1.0.) |
 | Top-P | 0 to 1 | 0.92 | Nucleus sampling threshold. |
 | Repetition Penalty | 1.0 to 1.5 | 1.1 | Penalises recently used audio codes to break stuck loops. 1.0 turns it off. |
 | Rep. Mode | Presence, Frequency, DRY | Presence | Shown when the penalty is above 1.0. See below. |
@@ -301,7 +301,7 @@ the chain, or alongside it when Parallel Cover Art is on in Settings.
 | Vocal Naturalizer | off | Experimental. Five DSP stages that pull back robotic and auto-tune artefacts: vibrato, formant variation, metallic cut (6 to 10 kHz), quantization masking and transition smoothing, with a master Amount (default 0.5). It processes the whole mix, so A/B it against the same render with it off. |
 | Pre-VST Gain Offset | 0 dB | A fixed gain (-10 to +10 dB) before the VST chain and mastering. Negative values give a VST chain headroom. When something runs after it, peaks above full scale are passed on for that stage to handle; when nothing does, it limits. |
 | VST Chain | empty | Your own VST3 plugins. See [VST chain](#vst-chain). |
-| Mastering | off | Matches the level, frequency balance and dynamics of a reference track you upload. "Also use as timbre reference" feeds the same track to the DiT as a [timbre reference](#timbre-reference). |
+| Mastering | off | Matches the level, frequency balance and dynamics of a reference track you upload. "Also use as timbre reference" feeds the same track to the DiT as a [timbre reference](#timbre-reference); ACE-Step only, so the switch is hidden on the other backends. |
 | Final Normalizer | off | Always the last stage that changes the audio. Measures integrated loudness (ITU-R BS.1770-4) and sets the gain to hit a target: Spotify / YouTube Music (-14 LUFS, the default), Apple Music / Tidal (-16), EBU R128 (-23), Club / DJ Playback (-8) or Custom (-30 to -5). A look-ahead limiter holds peaks at the Peak Ceiling (-6 to 0 dBFS, default -1). The resulting true peak is written to the generation log. |
 | Cover Art | off | See [Cover art](#cover-art). |
 | Quality Evaluator | off | Scores each track from spectral analysis and shows the score as a badge in the Library. Evaluate: Unmastered (default), Mastered or Both. |
@@ -348,6 +348,12 @@ in the player through the chain, pausing the normal player so you do not hear bo
 the monitor runs, a strip replaces the Profiles and VRAM controls at the right of the bar,
 with the track name, a seek bar, the time, pause and stop. Changes made in a plugin window
 while monitoring are only heard after you restart the monitor; a banner offers the restart.
+The monitor plays at the track's own rate (44.1 kHz for some backends, 48 kHz for
+ACE-Step). If your sound device cannot switch to that rate, the monitor converts to the
+device's rate itself, at the same pitch and speed. When the next track has a different rate,
+the plugins are set up again for it. Chains of any length run their plugins in the order
+shown, including three or more. If the monitor misbehaves, `vst_host.log` in the newest
+`logs/<session>` folder records each start, stop, seek and rate change.
 
 Presets save the current chain under a name so you can switch between chains. The chain
 itself is stored by the server; presets are stored in the browser.
@@ -375,7 +381,10 @@ per-layer group scales. Everything about it is in [Adapters](adapters.md).
 ## Profiles
 
 Profiles, at the right of the bar, saves every setting in the bar under a name. Profiles
-are stored by the server.
+are stored by the server, separately for each engine: the list, save, rename and delete
+work on the active engine's profiles only, and the header names that engine. A profile
+saved on MiniMax-Music3, YuE2 or Stable Audio 3 leaves out ACE-Step's models, adapters, DiT
+sampling and LM settings. Profiles saved before this change belong to ACE-Step.
 
 - Type a name and click Save. "Include caption and lyrics" (on by default) also stores the
   Custom-Gen content fields: caption, lyrics, negative prompt, instrumental, BPM, duration,
@@ -388,15 +397,17 @@ are stored by the server.
 - The import icon in the header loads a profile from a JSON file. A name that already
   exists asks before overwriting.
 
-A profile does not include the VST chain, the LM repetition penalty settings, the planner
-adapter, or the knobs other backends add to the bar. Applying a profile while another
+A profile does not include the VST chain, the LM repetition penalty settings or the planner
+adapter. Knobs a backend adds to the bar (`backendParams`) are saved too and merged
+over the live ones on apply. Importable YuE2 presets live in
+[presets/yue2-plan-play](presets/yue2-plan-play/README.md). Applying a profile while another
 backend is active writes the solver, schedule and guidance picks into that backend's
 settings, since those are kept per backend.
 
 ## VRAM indicator
 
-The figure at the right of the bar is GPU memory used and total, in GB, with a bar that
-turns yellow above 70% and red above 90%. It refreshes every five seconds. Hover it to list
+The VRAM badge at the top of the Terminal box, in the right-hand column, is GPU memory used
+and total, in GB, with a bar that turns yellow above 70% and red above 90%. It refreshes about every 1.5 seconds. Hover it to list
 the models the engine currently holds in VRAM, each with its size and an unload button.
 A model in use cannot be unloaded, and an unloaded model reloads the next time it is
 needed. Whatever is not listed is working memory and cannot be unloaded.
@@ -450,6 +461,10 @@ An external agent (Claude Code, Codex) can also submit and poll generations thro
 `hotstep` MCP server, across all three backends. See [Driving HOT-Step with an
 agent](mcp.md).
 
+### Progress badge and done notifications
+
+While jobs run, the Create entry in the sidebar and the mobile header show a badge with the running count and the active job's percent, and the tab title reads like `(2) 43% · HOT-Step`. The first time you click Generate the browser asks whether HOT-Step may show notifications; if you allow it, a notification appears when a job finishes while the tab is in the background. Clicking it brings the tab forward and opens the song.
+
 ## Task modes
 
 The engine has one generation pipeline and several task modes. The studio picks the mode;
@@ -474,6 +489,12 @@ cover-nofsq, repaint, lego and extract; the caption and lyrics go to the DiT as
 written. lego, extract and complete need a base or SFT DiT, not a turbo model.
 <!-- TODO(verify): whether Stem Separator's extract jobs use any Generation-bar settings. They are submitted by the Stem Separator's own route, not the shared generation queue path. -->
 
+Returning to a studio does not submit another generation. The queue keeps its
+existing order and ownership rules while status views share current results.
+Leaving a status view stops that view's observation; use the job's explicit
+cancel control to stop server work. A completed server-queued render reaches
+the Library once, including when both the queue and its submitting view follow it.
+
 ## Related
 
 - [Custom-Gen](studios/create.md)
@@ -485,3 +506,7 @@ written. lego, extract and complete need a base or SFT DiT, not a turbo model.
 - [Getting higher quality output](quality.md)
 - [Models](models.md)
 - [Driving HOT-Step with an agent (MCP)](mcp.md)
+
+## Release data paths
+
+Release audio and references live under the shared data folder's `library/`. The `/audio` and `/references` URLs keep their existing meanings after a move or repoint. See [Data folder and upgrades](data-folder.md).

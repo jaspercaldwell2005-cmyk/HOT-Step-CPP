@@ -27,7 +27,7 @@ import { getSetting, setSetting } from '../../../db/lireekDb.js';
 import { listAllYue2Runs, readSafetensorsMeta, type Yue2AdapterMeta } from '../../training/yue2Runs.js';
 import { listAllYue2ArRuns } from '../../training/yue2ArRuns.js';
 import { listAllYue2AitkRuns } from '../../training/yue2AitkRuns.js';
-import { yue2AdapterTrigger } from './jointAdapterContext.js';
+import { yue2AdapterTrigger, setYue2ManualTrigger } from './jointAdapterContext.js';
 import { coverScoreChoices, transformCoverScore, type CoverScoreChoices } from './coverScoreTransform.js';
 import { EMPTY_COVER_SCORE_ERROR, hasSoundingVocalBar } from './scoreHealth.js';
 import { runYue2Generation } from './generate.js';
@@ -125,6 +125,7 @@ function yue2ReadScales(key: string): Yue2AdapterScales {
       early: yue2Dial(parsed.early, base.early),
       mid: yue2Dial(parsed.mid, base.mid),
       late: yue2Dial(parsed.late, base.late),
+      ...(parsed.plan === undefined ? {} : { plan: yue2Dial(parsed.plan, base.global) }),
     };
   } catch {
     return base;
@@ -262,6 +263,18 @@ export function yue2StackFrom(adapters: Record<Yue2LmAdapterKind, Yue2PersistedS
   return out;
 }
 
+/** The stack a plan_only job loads: each slot's planner strength in place of
+ *  its master. Equal to yue2StackFrom when no slot sets one. */
+export function yue2PlanStackFrom(adapters: Record<Yue2LmAdapterKind, Yue2PersistedSlot>): Yue2AdapterRef[] {
+  return yue2StackFrom(adapters).map(a => ({ ...a, scales: { ...a.scales, global: a.scales.plan ?? a.scales.global } }));
+}
+
+/** Does planning need its own load? Only when some slot's planner strength
+ *  differs from its master. */
+export function yue2PlanScaleDiffers(adapters: Record<Yue2LmAdapterKind, Yue2PersistedSlot>): boolean {
+  return yue2StackFrom(adapters).some(a => a.scales.plan !== undefined && a.scales.plan !== a.scales.global);
+}
+
 /** An adapter reference the engine can actually open, or null.
  *
  *  Deliberately NOT confined to the training root: a hand-trained or copied
@@ -374,7 +387,7 @@ function resolveRequest(submission: Readonly<Record<string, unknown>>): Resolved
     if (!abc) {
       throw new Error('A cover needs an approved lead sheet (yue2Abc) — none was supplied.');
     }
-    if (!hasSoundingVocalBar(abc)) throw new Error(EMPTY_COVER_SCORE_ERROR);
+    if (!hasSoundingVocalBar(abc, true)) throw new Error(EMPTY_COVER_SCORE_ERROR);
     coverAbc = abc;
   }
   const options: Record<string, unknown> = {};
@@ -384,6 +397,8 @@ function resolveRequest(submission: Readonly<Record<string, unknown>>): Resolved
   if (cover && coverAbc) {
     const choices = coverScoreChoices(cover);
     const score = transformCoverScore(coverAbc, choices);
+    // Dropping the instrumental voices can leave nothing to sing.
+    if (!hasSoundingVocalBar(score.renderedAbc, true)) throw new Error(EMPTY_COVER_SCORE_ERROR);
     options.yue2Cover = { ...(cover.sourceId ? { sourceId: cover.sourceId } : {}),
       ...(cover.sourceKind ? { sourceKind: cover.sourceKind } : {}),
       ...(cover.sourceLabel ? { sourceLabel: cover.sourceLabel } : {}),
@@ -425,6 +440,7 @@ function resolveRequest(submission: Readonly<Record<string, unknown>>): Resolved
     pickedModels[`lm_adapter_${kind}_scale_early`] = String(slot.scales.early);
     pickedModels[`lm_adapter_${kind}_scale_mid`] = String(slot.scales.mid);
     pickedModels[`lm_adapter_${kind}_scale_late`] = String(slot.scales.late);
+    if (slot.scales.plan !== undefined) pickedModels[`lm_adapter_${kind}_scale_plan`] = String(slot.scales.plan);
   }
   return {
     operation: 'text2music',
@@ -562,7 +578,7 @@ async function capabilities(): Promise<BackendCapabilities> {
       repaint: false,
       lego: false,
       extract: false,
-      streaming: false,
+      streaming: true,
       training: false,
       midi: false,
       stems: false,
@@ -625,14 +641,15 @@ async function capabilities(): Promise<BackendCapabilities> {
       },
       {
         key: 'yue2SemTopK', group: 'lm', section: 'Composer (song)', type: 'slider', label: 'Composer Top-K',
-        hint: `Candidates kept per codec frame. Checkpoint: ${sd('semantic', 'top_k', 100)}.`,
-        default: sd('semantic', 'top_k', 100), min: 1, max: 500, step: 1,
+        hint: `Candidates kept per codec frame. 0 = unlimited. Checkpoint: ${sd('semantic', 'top_k', 100)}. `
+            + 'Unlimited with Composer Temperature above 1.0 breaks the song; the server clamps temperature to 1.0 in that case.',
+        default: sd('semantic', 'top_k', 100), min: 0, max: 500, step: 1,
       },
       {
         key: 'yue2SemRepPenalty', group: 'lm', section: 'Composer (song)', type: 'slider', label: 'Composer Repetition Penalty',
         hint: 'Frequency penalty over recent codec frames — the "same bar forever" guard. '
             + `1.0 = off. Checkpoint: ${sd('semantic', 'repetition_penalty', 1.2)}.`,
-        default: sd('semantic', 'repetition_penalty', 1.2), min: 1, max: 1.5, step: 0.005,
+        default: sd('semantic', 'repetition_penalty', 1.2), min: 1, max: 2, step: 0.005,
       },
       {
         key: 'yue2SemRepWindow', group: 'lm', section: 'Composer (song)', type: 'slider', label: 'Composer Repetition Window',
@@ -695,7 +712,8 @@ async function capabilities(): Promise<BackendCapabilities> {
         type: 'text',
         label: 'CFG Scale',
         hint: 'Blank = the checkpoint\'s own default for the selected Chain of Thought mode '
-            + '(1.0 for melody/full, 1.01 for off). Set a number to override it.',
+            + '(1.0 for melody/full, 1.01 for off). Set a number to override it (useful range 0.5 to 3.0). '
+            + 'Higher follows the style text harder but costs some high-end air.',
         default: '',
       },
       {
@@ -713,11 +731,15 @@ async function capabilities(): Promise<BackendCapabilities> {
         key: 'yue2NarSolver',
         type: 'select',
         label: 'NAR Solver',
-        hint: 'Midpoint is the tested default (two model evaluations per step). Wasserstein uses one evaluation plus latent regularization; compare by listening.',
+        hint: 'Midpoint is the tested default (two model evaluations per step). Wasserstein uses one evaluation plus latent regularization; compare by listening. '
+            + 'The composer supplies the song plan. NAR settings shape its rendering; experimental Plan Strength, Plan CFG, CADS and plan-aware schedulers can also change how closely it follows that plan.',
         default: 'stock',
         options: [
           { value: 'stock', label: 'Midpoint (stock)' },
           { value: 'wasserstein', label: 'Wasserstein Flow (experimental)' },
+          { value: 'ancestral', label: 'Ancestral Euler (churn, experimental)' },
+          { value: 'latent_eq', label: 'Latent Channel EQ (experimental)' },
+          { value: 'tlie', label: 'Timestep Lie (experimental)' },
         ],
       },
       {
@@ -729,8 +751,52 @@ async function capabilities(): Promise<BackendCapabilities> {
         options: [
           { value: 'stock', label: 'Uniform (stock)' },
           { value: 'ht_v3', label: 'HT V3 (experimental)' },
+          { value: 'plan_aware', label: 'Plan-Aware (section-targeted, experimental)' },
+          { value: 'plan_loose', label: 'Plan-Loose (loose plan early, experimental)' },
+          { value: 'plan_overdrive', label: 'Plan Overdrive (plan strength curve, experimental)' },
         ],
       },
+      { key: 'yue2CadsStrength', type: 'slider', label: 'Plan Conditioning Noise (CADS)',
+        hint: 'Adds seeded noise to the plan conditioning (the AR prefix the NAR decoder attends to) '
+            + 'early in the NAR solve, fading out as the audio settles. More variety between renders '
+            + 'of the same plan at some cost to plan adherence. 0 = off (identical to before). Experimental.',
+        default: 0, min: 0, max: 1, step: 0.05 },
+      { key: 'yue2PlanWStart', type: 'slider', label: 'Plan Strength (start)',
+        hint: 'Scales the plan conditioning (the AR prefix the NAR decoder attends to) at the first NAR step. '
+            + 'Below 1 loosens the plan, above 1 leans on it harder. 1 and 1 = off (identical to before). Experimental.',
+        default: 1, min: 0, max: 2, step: 0.05 },
+      { key: 'yue2PlanWEnd', type: 'slider', label: 'Plan Strength (end)', default: 1, min: 0, max: 2, step: 0.05,
+        hint: 'Plan conditioning scale at the last NAR step; interpolated between start and end.' },
+      { key: 'yue2PlanWCurve', type: 'select', label: 'Plan Strength Curve', default: 'linear',
+        options: [ { value: 'linear', label: 'Linear' }, { value: 'cosine', label: 'Cosine' } ],
+        hint: 'Shape of the start-to-end interpolation. A scheduler plugin can override the whole curve.' },
+      { key: 'yue2PlanCfg', type: 'slider', label: 'Plan CFG',
+        hint: 'Classifier-free guidance on the plan: each NAR step also runs a pass with the plan removed and pushes '
+            + 'the result away from it. 1 = off (identical to before, no extra cost). Above 1 doubles NAR time. Experimental.',
+        default: 1, min: 1, max: 4, step: 0.1 },
+      { key: 'yue2PlanCfgT1', type: 'slider', label: 'Plan CFG From t', default: 0, min: 0, max: 1, step: 0.05,
+        hint: 't runs 1 (noise) to 0 (clean). CFG applies only while t is between this and the next value.',
+        visible_when: { key: 'yue2PlanCfg', not_equals: '1' } },
+      { key: 'yue2PlanCfgT2', type: 'slider', label: 'Plan CFG To t', default: 1, min: 0, max: 1, step: 0.05,
+        hint: 'Upper end of the CFG window (1 = from the very first step).',
+        visible_when: { key: 'yue2PlanCfg', not_equals: '1' } },
+      { key: 'yue2PlanCfgRescale', type: 'slider', label: 'Plan CFG Rescale', default: 0.7, min: 0, max: 1, step: 0.05,
+        hint: 'Pulls the guided result back toward the level of the plain one so higher CFG does not blow up loudness '
+            + 'and clip. 0 = raw CFG, 0.7 = usual setting.',
+        visible_when: { key: 'yue2PlanCfg', not_equals: '1' } },
+      { key: 'yue2PlanCfgLevelMatch', type: 'toggle', label: 'Plan CFG Level Match', default: true,
+        hint: 'Scales the guided latent back to the no-CFG level before decode, so raising CFG changes the music, '
+            + 'not the loudness.',
+        visible_when: { key: 'yue2PlanCfg', not_equals: '1' } },
+      { key: 'yue2CadsT1', type: 'slider', label: 'CADS Clean Below t', default: 0.6, min: 0, max: 1, step: 0.05,
+        hint: 't runs 1 (noise) to 0 (clean). Below this t the conditioning is untouched.',
+        visible_when: { key: 'yue2CadsStrength', not_equals: '0' } },
+      { key: 'yue2CadsT2', type: 'slider', label: 'CADS Full Noise Above t', default: 0.9, min: 0, max: 1, step: 0.05,
+        hint: 'Above this t the conditioning gets the full noise; linear ramp between the two.',
+        visible_when: { key: 'yue2CadsStrength', not_equals: '0' } },
+      { key: 'yue2CadsRescale', type: 'toggle', label: 'CADS Rescale', default: true,
+        hint: 'Restore the original conditioning mean and spread after adding noise (CADS rescale).',
+        visible_when: { key: 'yue2CadsStrength', not_equals: '0' } },
       { key: 'yue2WassTau', type: 'slider', label: 'Proximal Scale', default: 1, min: 0.1, max: 5, step: 0.05,
         section: 'Wasserstein Flow Controls', visible_when: { key: 'yue2NarSolver', equals: 'wasserstein' } },
       { key: 'yue2WassSpectral', type: 'slider', label: 'Element Energy Weight', default: 0.1, min: 0, max: 1, step: 0.01,
@@ -747,6 +813,59 @@ async function capabilities(): Promise<BackendCapabilities> {
         section: 'Wasserstein Flow Controls', visible_when: { key: 'yue2NarSolver', equals: 'wasserstein' } },
       { key: 'yue2WassLatentRms', type: 'slider', label: 'Auto Target RMS', default: 0.97, min: 0.1, max: 3, step: 0.01,
         section: 'Wasserstein Flow Controls', visible_when: { key: 'yue2NarSolver', equals: 'wasserstein' } },
+      { key: 'yue2EqGroup', type: 'slider', label: 'Channel Group', default: 0, min: -1, max: 7, step: 1,
+        hint: 'Which 8 of the 64 latent channels to scale: 0..7 = channels 8g..8g+7, -1 = all.',
+        section: 'Latent EQ Controls', visible_when: { key: 'yue2NarSolver', equals: 'latent_eq' } },
+      { key: 'yue2EqGain', type: 'slider', label: 'Gain', default: 1.5, min: 0, max: 3, step: 0.01,
+        hint: 'Velocity scale for the chosen group. 1 = plain Euler.',
+        section: 'Latent EQ Controls', visible_when: { key: 'yue2NarSolver', equals: 'latent_eq' } },
+      { key: 'yue2EqT1', type: 'slider', label: 'EQ From t', default: 0, min: 0, max: 1, step: 0.01,
+        hint: 't runs 1 (noise) to 0 (clean). The gain applies only while t is between this and the next value.',
+        section: 'Latent EQ Controls', visible_when: { key: 'yue2NarSolver', equals: 'latent_eq' } },
+      { key: 'yue2EqT2', type: 'slider', label: 'EQ To t', default: 1, min: 0, max: 1, step: 0.01,
+        section: 'Latent EQ Controls', visible_when: { key: 'yue2NarSolver', equals: 'latent_eq' } },
+      { key: 'yue2EqGains', type: 'text', label: 'Group Gains', default: '',
+        hint: 'Overrides Channel Group and Gain with several groups, e.g. 0=1.2,3=0.7.',
+        section: 'Latent EQ Controls', visible_when: { key: 'yue2NarSolver', equals: 'latent_eq' } },
+      { key: 'yue2EqSection', type: 'text', label: 'Section Only', default: '',
+        hint: 'Only frames in plan sections whose name starts with this text (e.g. chorus). Blank = all frames.',
+        section: 'Latent EQ Controls', visible_when: { key: 'yue2NarSolver', equals: 'latent_eq' } },
+      { key: 'yue2LieAmount', type: 'slider', label: 'Lie (t offset)', default: 0.15, min: -0.5, max: 0.5, step: 0.01,
+        hint: 'Added to t when asking the model for velocity. Positive invents more detail, negative refines '
+            + 'conservatively. 0 = plain Euler.',
+        section: 'Timestep Lie Controls', visible_when: { key: 'yue2NarSolver', equals: 'tlie' } },
+      { key: 'yue2LieCurve', type: 'select', label: 'Lie Curve', default: 'constant',
+        options: [
+          { value: 'constant', label: 'Constant' },
+          { value: 'early', label: 'Early (noisy end)' },
+          { value: 'late', label: 'Late (clean end)' },
+          { value: 'sections', label: 'Per section' },
+        ],
+        hint: 'Per section runs one model pass per distinct lie value in a chunk, so it can double NAR time.',
+        section: 'Timestep Lie Controls', visible_when: { key: 'yue2NarSolver', equals: 'tlie' } },
+      { key: 'yue2LieT1', type: 'slider', label: 'Lie Window t1', default: 0.3, min: 0, max: 1, step: 0.01,
+        hint: 'Early and Late curves ramp the lie between t1 and t2.',
+        section: 'Timestep Lie Controls', visible_when: { key: 'yue2NarSolver', equals: 'tlie' } },
+      { key: 'yue2LieT2', type: 'slider', label: 'Lie Window t2', default: 0.7, min: 0, max: 1, step: 0.01,
+        section: 'Timestep Lie Controls', visible_when: { key: 'yue2NarSolver', equals: 'tlie' } },
+      { key: 'yue2LieSections', type: 'text', label: 'Section Lies', default: '',
+        hint: 'Per section curve only, e.g. chorus=0.25,verse=-0.1. Unlisted sections use Lie.',
+        section: 'Timestep Lie Controls', visible_when: { key: 'yue2NarSolver', equals: 'tlie' } },
+      { key: 'yue2OdDrive', type: 'slider', label: 'Drive (peak plan strength)', default: 1.5, min: 0, max: 3, step: 0.05,
+        section: 'Plan Overdrive Controls', visible_when: { key: 'yue2NarScheduler', equals: 'plan_overdrive' } },
+      { key: 'yue2OdShape', type: 'select', label: 'Shape', default: 'late',
+        options: [
+          { value: 'flat', label: 'Flat' },
+          { value: 'late', label: 'Late (rise)' },
+          { value: 'early', label: 'Early (fall)' },
+          { value: 'pulse', label: 'Pulse' },
+        ],
+        hint: 'How plan strength moves between Base and Drive across the NAR steps. Replaces the Plan Strength curve.',
+        section: 'Plan Overdrive Controls', visible_when: { key: 'yue2NarScheduler', equals: 'plan_overdrive' } },
+      { key: 'yue2OdBase', type: 'slider', label: 'Base Strength', default: 1, min: 0, max: 3, step: 0.05,
+        section: 'Plan Overdrive Controls', visible_when: { key: 'yue2NarScheduler', equals: 'plan_overdrive' } },
+      { key: 'yue2OdPeriod', type: 'slider', label: 'Pulse Period (steps)', default: 4, min: 2, max: 32, step: 1,
+        section: 'Plan Overdrive Controls', visible_when: { key: 'yue2NarScheduler', equals: 'plan_overdrive' } },
       { key: 'yue2HtKinetic', type: 'slider', label: 'HT Kinetic Energy', default: 0.3, min: 0, max: 3, step: 0.05,
         section: 'HT V3 Controls', visible_when: { key: 'yue2NarScheduler', equals: 'ht_v3' } },
       { key: 'yue2HtDamping', type: 'slider', label: 'HT Damping Friction', default: 2.2, min: 0, max: 6, step: 0.1,
@@ -830,17 +949,6 @@ async function capabilities(): Promise<BackendCapabilities> {
         min: 0,
         max: 300,
         step: 10,
-      },
-      {
-        key: 'yue2VaeVariant',
-        type: 'select',
-        label: 'VAE Variant',
-        hint: 'Which of the two shipped decoder checkpoints renders the final audio.',
-        default: 'standard',
-        options: [
-          { value: 'standard', label: 'Standard' },
-          { value: 'legacy', label: 'Legacy' },
-        ],
       },
       {
         key: 'yue2AutoReplan', section: 'Re-planning',
@@ -1061,7 +1169,7 @@ function yue2LmAdapterCatalogue(): {
       const add = (kind: Yue2LmAdapterKind, ref: string): void => {
         const abs = path.resolve(ref);
         const fileMeta = readSafetensorsMeta(abs);
-        const { trigger, inferred } = yue2AdapterTrigger(abs, jointRuns);
+        const { trigger, inferred, manual } = yue2AdapterTrigger(abs, jointRuns);
         const rank = fileMeta?.rank;
         const steps = fileMeta?.steps ?? ckpt.step;
         paths.push(abs);
@@ -1072,6 +1180,7 @@ function yue2LmAdapterCatalogue(): {
           runName,
           trigger: trigger || undefined,
           triggerInferred: inferred || undefined,
+          triggerManual: manual || undefined,
           rank,
           steps: Number.isFinite(steps) && steps > 0 && steps < Number.MAX_SAFE_INTEGER ? steps : undefined,
           bytes: (() => { try { return fs.statSync(abs).size; } catch { return undefined; } })(),
@@ -1098,7 +1207,7 @@ function yue2LmAdapterCatalogue(): {
     const kind: Yue2LmAdapterKind | null = /^yue2-ar-/.test(fileMeta?.format ?? '') ? 'ar'
       : /^yue2-nar-/.test(fileMeta?.format ?? '') ? 'nar' : null;
     if (!kind) continue;
-    const { trigger, inferred } = yue2AdapterTrigger(abs, jointRuns);
+    const { trigger, inferred, manual } = yue2AdapterTrigger(abs, jointRuns);
     const runName = path.relative(folder, path.dirname(abs)) || path.basename(folder);
     const steps = fileMeta?.steps;
     paths.push(abs);
@@ -1108,6 +1217,7 @@ function yue2LmAdapterCatalogue(): {
       runName,
       trigger: trigger || undefined,
       triggerInferred: inferred || undefined,
+      triggerManual: manual || undefined,
       rank: fileMeta?.rank,
       steps: steps && Number.isFinite(steps) && steps > 0 ? steps : undefined,
       bytes: (() => { try { return fs.statSync(abs).size; } catch { return undefined; } })(),
@@ -1153,10 +1263,10 @@ async function models(): Promise<BackendModels> {
   return {
     buckets: {
       lm: (v?.lm?.available ?? []).map(f => f.type),
-      // Fixed two-choice enum, not a disk scan — matches the extension's own
-      // yue2VaeVariant select. modelsMissing/props.files is what tells the
-      // user whether a given variant is actually installed.
-      vae: ['standard', 'legacy'],
+      // The shipped pair, plus the local dec2x only when its file was found.
+      // modelsMissing/props.files is what tells the user whether a shipped
+      // variant is actually installed.
+      vae: ['standard', 'legacy', ...(props?.files?.vae_dec2x?.found ? ['dec2x'] : [])],
     },
     adapters: [],
     lmAdapters: adapters.paths,
@@ -1219,6 +1329,7 @@ function slotDefaults(
     out[`lmAdapter${Slot}ScaleEarly`] = slot.scales.early;
     out[`lmAdapter${Slot}ScaleMid`] = slot.scales.mid;
     out[`lmAdapter${Slot}ScaleLate`] = slot.scales.late;
+    if (slot.scales.plan !== undefined) out[`lmAdapter${Slot}ScalePlan`] = slot.scales.plan;
     out[`lmAdapter${Slot}InForce`] = !!slot.path && inForce;
   }
   return out;
@@ -1243,6 +1354,11 @@ function readSlotSelection(
     selection[`lmAdapter${Slot}Scale${suffix}`] === undefined
       ? fallback
       : yue2Dial(selection[`lmAdapter${Slot}Scale${suffix}`], fallback);
+  // Planner strength: absent keeps the persisted one, '' clears it back to
+  // "same as the master".
+  const planRaw = selection[`lmAdapter${Slot}ScalePlan`];
+  const plan = planRaw === undefined ? persisted.scales.plan
+    : String(planRaw).trim() === '' ? undefined : yue2Dial(planRaw, persisted.scales.global);
   return {
     given,
     ref: given ? selection[pathKey].trim() : persisted.path,
@@ -1255,6 +1371,7 @@ function readSlotSelection(
       early: dial('Early', persisted.scales.early),
       mid: dial('Mid', persisted.scales.mid),
       late: dial('Late', persisted.scales.late),
+      ...(plan === undefined ? {} : { plan }),
     },
   };
 }
@@ -1327,10 +1444,11 @@ export function yue2ResolvePick(
   }
   return {
     lm: own.lm ?? persisted.lm,
-    // The per-request VAE select (the yue2VaeVariant extension) is part of the
-    // job's pick, after the job's own yue2Pick and before the saved default.
-    vae_variant: own.vae ?? (submission.yue2VaeVariant === 'standard' || submission.yue2VaeVariant === 'legacy'
-      ? submission.yue2VaeVariant : persisted.vae_variant),
+    // The model picker is the only VAE control. A per-generation select used
+    // to sit beside it and, being saved with the other generation settings
+    // (and restored by reusing a song's), silently overrode the picker; a
+    // stale yue2VaeVariant in old saved settings is ignored for that reason.
+    vae_variant: own.vae ?? persisted.vae_variant,
     adapters: resolveSlots(own, persisted.adapters).next,
   };
 }
@@ -1354,6 +1472,7 @@ export function yue2PickFromModels(models: Readonly<Record<string, string>>): Yu
         early: num(`${key}_scale_early`, d.early),
         mid: num(`${key}_scale_mid`, d.mid),
         late: num(`${key}_scale_late`, d.late),
+        ...(models[`${key}_scale_plan`] === undefined ? {} : { plan: num(`${key}_scale_plan`, d.global) }),
       },
     };
   };
@@ -1370,6 +1489,14 @@ async function selectModel(selection: Record<string, string>) {
     }
     setSetting(ADAPTER_FOLDER_SETTING, folder);
     if (Object.keys(selection).length === 1) return { changed: false, lmAdapterFolder: folder };
+  }
+  // A typed trigger word for an adapter that carries none (the Adapters
+  // dropdown): stored per file, not part of the pick.
+  if (typeof selection.lmAdapterTriggerPath === 'string' && typeof selection.lmAdapterTrigger === 'string') {
+    const ref = resolveYue2Adapter(selection.lmAdapterTriggerPath.trim());
+    if (!ref) throw new Error(`YuE2 adapter not usable: ${selection.lmAdapterTriggerPath}`);
+    setYue2ManualTrigger(ref, selection.lmAdapterTrigger);
+    if (Object.keys(selection).length === 2) return { changed: false };
   }
   const persisted = yue2PersistedSelection();
   const sel: Yue2Selection = {
@@ -1473,7 +1600,7 @@ async function reconcileSelection(props: Yue2Props | null, stale: boolean): Prom
   if (!lmDrifted && !adapterDrifted) return;
 
   const sel: Yue2Selection = { lm: targetLm };
-  if (want.vae_variant === 'standard' || want.vae_variant === 'legacy') {
+  if (want.vae_variant === 'standard' || want.vae_variant === 'legacy' || want.vae_variant === 'dec2x') {
     sel.vae_variant = want.vae_variant;
   }
   // Only speak about the adapter when there is something to say: replaying the

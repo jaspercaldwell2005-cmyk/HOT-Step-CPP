@@ -8,12 +8,14 @@ import { buildGpuEnv, selectedGpuMemoryMB } from '../gpuDevices.js';
 
 const PARALLEL_PREVIEW_MIN_VRAM_MB = 28 * 1024;
 import { log, runYue2AceTrain, YUE2_IDLE_MS, type RelayState } from './yue2TrainRunner.js';
-import { checkpointRecords, listYue2AitkRuns, recordYue2AitkRun, yue2JointWeight } from './yue2AitkRuns.js';
+import { checkpointRecords, isCheckpointLadder, listYue2AitkRuns, recordYue2AitkRun, yue2JointWeight } from './yue2AitkRuns.js';
 import { runYue2PlanCheck, type Yue2PlanCheckOptions } from './yue2PlanCheck.js';
 import { renderYue2JointPreview, listYue2JointPreviews, Yue2PreviewCleanupError } from './yue2JointPreview.js';
 import { yue2Unload } from '../backends/yue2/client.js';
 import { yue2StyleNormsForRun } from '../backends/yue2/scoreHealth.js';
 import { ensureYue2PreparedDataset } from './yue2AutoPrepare.js';
+import { FIXED_RECIPE_CAPTION_GRAMMAR } from './fixedRecipeCaption.js';
+import { YUE2_JOINT_FIXED_RECIPE_DROPOUTS } from '../../contracts/trainingRecipes.js';
 import { getDataset } from './datasetsRepo.js';
 import { getDb } from '../../db/database.js';
 import { config } from '../../config.js';
@@ -303,16 +305,17 @@ export function applyBaseMatchedRecipe(body: Record<string, unknown>): Record<st
   return { ...out, ...BASE_MATCHED_FORCED };
 }
 
-/** Fixed joint-training recipe: bf16 base, rank-32 LoRA, one song per update. */
+/** Fixed joint-training recipe: bf16 base, rank-64 LoRA, one song per update. */
 export function applyFixedRecipe(body: Record<string, unknown>): Record<string, unknown> {
-  return { ...body, method: 'fixed-recipe', base: 'bf16', adapterType: 'lora',
-    rank: 32, alpha: 32, optimizer: 'adamw-lm', cautious: false,
+  // bf16 is the default and the ear-tested base; a chosen GGUF or ConvRot base is kept.
+  return { ...body, method: 'fixed-recipe', base: typeof body.base === 'string' && body.base ? body.base : 'bf16', steps: 1500, seed: 42, saveEvery: 200, adapterType: 'lora',
+    rank: 64, alpha: 64, optimizer: 'adamw-lm', cautious: false,
     lr: 1e-4, weightDecay: 0.01, beta1: 0.9, beta2: 0.999,
     lrSchedule: 'constant', warmup: 0, plannerLrScale: 0.5, narLrScale: 1,
     stopMode: 'steps', targetLoss: undefined, targetKl: undefined,
     arLossWeight: 0.5, klWeight: 0.2, arTargets: 'tuned',
     gradAccum: 1, arCropFrames: 0, narCropFrames: 1500,
-    abcDropout: 1, captionDropout: 0, textDropout: 0, lyricDropout: 0, bothDropout: 0,
+    ...YUE2_JOINT_FIXED_RECIPE_DROPOUTS,
     lyricTiming: false, alignmentEnabled: false, cursorWeight: 0,
     narExtraSteps: 0, spikeFactor: 0, reconStop: 0, reconTarget: 0,
     planCheck: undefined, autoRefine: false, lrScale: 1,
@@ -459,8 +462,8 @@ function validateOptions(o: ResolvedYue2JointTrainOptions): string | null {
   if (manifestError) return `${manifestError}: ${o.dataset || '(empty)'}`;
   if (o.method === 'fixed-recipe') {
     const prepared = JSON.parse(fs.readFileSync(o.dataset, 'utf8')) as Record<string, unknown>;
-    if (prepared.caption_grammar !== 'fixed-recipe' || prepared.loudness_lufs !== 0)
-      return 'Fixed recipe needs a dataset prepared with its caption grammar and loudness off.';
+    if (prepared.caption_grammar !== FIXED_RECIPE_CAPTION_GRAMMAR)
+      return 'Fixed recipe needs a dataset prepared with its caption grammar.';
   }
   if (!o.outDir) return 'Joint training requires a new output directory';
   if (fs.existsSync(o.outDir)) return `output directory already exists; choose a new directory: ${o.outDir}`;
@@ -577,6 +580,8 @@ function relayJsonLine(job: TrainingJob, line: string, state: RelayState, clock?
     state.lastLoss = event.loss ?? state.lastLoss;
     pushEvent(job, { type: 'metric', metric: 'step', ts: Date.now(), step,
       totalSteps: state.totalSteps, ...(event.loss === undefined ? {} : { loss: event.loss }),
+      ...(event.arCe === undefined ? {} : { arCe: event.arCe }),
+      ...(event.cursorCe === undefined ? {} : { cursorCe: event.cursorCe }),
       ...(event.arKl === undefined ? {} : { arKl: event.arKl }),
       ...(event.narMse === undefined ? {} : { narMse: event.narMse }),
       ...(event.plannerFrozen ? { plannerFrozen: true } : {}),
@@ -593,7 +598,7 @@ function relayJsonLine(job: TrainingJob, line: string, state: RelayState, clock?
         loss: state.lastLoss, path: saved.dir });
       // KL rungs preview on kl_mark; once the planner is frozen the KL stops
       // moving, so the decoder phase previews every step-cadence save.
-      if (saved && (opts.method === 'base-matched' || !(opts.klCheckpointEvery! > 0) || state.frozenAt !== undefined)) state.onRung?.(step);
+      if (saved && (isCheckpointLadder(opts) || !(opts.klCheckpointEvery! > 0) || state.frozenAt !== undefined)) state.onRung?.(step);
       if (thinning?.pendingDrop?.step === step) {
         // The folder exists under its final name now (see pendingDrop).
         if (saved) thinning.disposable = { step, dir: saved.dir, recon: thinning.pendingDrop.recon };
@@ -669,7 +674,7 @@ function persistAitkCatalogue(
 
 /** Pure contract helper kept exportable for server-side event tests. */
 export function parseYue2JointEvent(line: string, totalSteps: number): {
-  stage: string; step?: number; loss?: number; arKl?: number; narMse?: number; plannerFrozen?: boolean; gradNorm?: number; lr?: number; stepMs?: number; totalSteps: number;
+  stage: string; step?: number; loss?: number; arCe?: number; cursorCe?: number; arKl?: number; narMse?: number; plannerFrozen?: boolean; gradNorm?: number; lr?: number; stepMs?: number; totalSteps: number;
 } | null {
   try {
     const event = JSON.parse(line) as Record<string, unknown>;
@@ -683,6 +688,8 @@ export function parseYue2JointEvent(line: string, totalSteps: number): {
     const stepMs = finite(event.step_ms) && event.step_ms >= 0 ? event.step_ms : undefined;
     return { stage: event.stage, ...(step === undefined ? {} : { step }),
       ...(loss === undefined ? {} : { loss }),
+      ...(finite(event.ar_ce) ? { arCe: event.ar_ce } : {}),
+      ...(finite(event.cursor_ce) ? { cursorCe: event.cursor_ce } : {}),
       ...(finite(event.ar_kl) ? { arKl: event.ar_kl } : {}),
       ...(finite(event.nar_mse) ? { narMse: event.nar_mse } : {}),
       ...(event.planner_frozen === true ? { plannerFrozen: true } : {}),
@@ -743,7 +750,7 @@ export async function runYue2JointTrainJob(job: TrainingJob): Promise<void> {
     // rung: a KL rung of a planner refinement, or, for a run without KL rungs
     // (base-matched, or Legacy without a refinement), every saved checkpoint,
     // which the relay fires onRung for (2026-09-27, Legacy 2026-10-06).
-    const preview = withGeneratedPreviewLyrics(job, o.preview?.enabled && (o.preview.everySteps > 0 || o.preview.parallel || (o.klCheckpointEvery ?? 0) > 0 || o.method === 'base-matched') ? o.preview : undefined);
+    const preview = withGeneratedPreviewLyrics(job, o.preview?.enabled && (o.preview.everySteps > 0 || o.preview.parallel || (o.klCheckpointEvery ?? 0) > 0 || isCheckpointLadder(o)) ? o.preview : undefined);
     // Plan checks pause the run like previews do; the pause cadence is the
     // check's while the planner is live, the preview's once it is frozen.
     const planCheck = o.planCheck && o.planCheck.every > 0 && (o.narExtraSteps ?? 0) > 0 ? o.planCheck : undefined;

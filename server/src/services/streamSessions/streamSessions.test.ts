@@ -163,6 +163,8 @@ test('session cap evicts the oldest ended session; idle and ended sessions expir
   try {
     const a = sessions.open('storm', { streamId: 'a' })!;
     a.record('start'); a.chunk(fixture(0.05, 120)); a.end();
+    const until = async (done: () => boolean) => { for (const end = Date.now() + 2000; !done() && Date.now() < end;) await new Promise(r => setTimeout(r, 10)); };
+    await until(() => fs.readdirSync(dir).length > 0); // recording must exist before eviction
     clock.t = 1;
     const b = sessions.open('storm', { streamId: 'b' })!;
     clock.t = 2;
@@ -170,7 +172,8 @@ test('session cap evicts the oldest ended session; idle and ended sessions expir
     assert.ok(c);
     assert.throws(() => sessions.get(a.id), /not found/);
     assert.equal(sessions.open('storm', { streamId: 'd' }), null, 'all live: no session, stream still plays');
-    await new Promise(r => setTimeout(r, 20));
+    // dispose() deletes fire-and-forget behind pending writes: poll, don't guess
+    await until(() => fs.readdirSync(dir).length === 0);
     assert.deepEqual(fs.readdirSync(dir), [], 'evicted recording deleted');
 
     clock.t = 5003;
@@ -278,4 +281,33 @@ test('export cleanup that cannot delete its temp file never throws and frees the
     second.cleanup();
     fs.rmSync(first.file, { force: true });
   } finally { done(); }
+});
+
+test('recording writes and exports count as busy for a data-folder move until cleanup', async () => {
+  const { getBusyBlockers } = await import('../../dataroot/pointer.js');
+  const busy = (what: string) => getBusyBlockers().some(b => b.includes(what));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stream-busy-'));
+  let release!: () => void;
+  const sessions = new StreamSessions(dir, async (wav, _format, _bitrate, out) => {
+    await new Promise<void>(r => { release = r; });
+    fs.copyFileSync(wav, out);
+  }, LIMITS, () => 0);
+  try {
+    const s = sessions.open('mm3', { jobId: 'j', take: 0 })!;
+    s.record('start');
+    s.chunk(fixture(0.1, 120));
+    assert.ok(busy('recording write'), 'pending append counts');
+    s.record('stop');
+    s.end();
+    const exporting = s.exportTo('flac');
+    assert.ok(busy('stream export'), 'export counts from the call');
+    while (!release) await new Promise(r => setImmediate(r));
+    assert.ok(busy('stream export'), 'still counted while the transcoder runs');
+    release();
+    const { cleanup } = await exporting;
+    assert.ok(!busy('recording write'));
+    assert.ok(busy('stream export'), 'counted until the download cleans up');
+    cleanup();
+    assert.ok(!busy('stream export'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

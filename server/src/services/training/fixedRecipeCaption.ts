@@ -9,6 +9,15 @@ const SONG_SECTION = /^\s*\[[^\]]+\]\s*$/;
 const CUE = /^\s*\([^()]*\)\s*$/;
 const HEADER = /^\s*\[(Tags|Lyrics|Duration)\]\s*$/i;
 
+export const FIXED_RECIPE_CAPTION_GRAMMAR = 'fixed-recipe-v3';
+
+export function fixedRecipeTrigger(trigger: string | undefined, slug: string): string {
+  return trigger?.trim() || slug;
+}
+
+// Unknown tags (e.g. [Breakdown]) are kept in Ruach's Title case, not dropped.
+const titleCase = (key: string) => key.replace(/(^|[\s-])([a-z])/g, (_, lead: string, letter: string) => lead + letter.toUpperCase());
+
 function splitLines(text: string): string[] {
   return text.split(/\r\n|\r|\n/).filter((_, i, lines) => i < lines.length - 1 || lines[i] !== '');
 }
@@ -23,7 +32,8 @@ export function cleanFixedRecipeLyrics(text: string): { lyrics: string; hints: s
         let key = match[1].trim().toLowerCase().split(/\s+-\s+|:/, 1)[0].trim().replace(/\s*\d+$/, '');
         if (key.includes('instrumental')) key = 'inst';
         else if (/(intro|outro|verse|chorus|bridge)$/.test(key) && KNOWN[key.split(' ').at(-1)!]) key = key.split(' ').at(-1)!;
-        const section = KNOWN[key] && `[${KNOWN[key]}]`;
+        const name = KNOWN[key] ?? titleCase(key);
+        const section = name && `[${name}]`;
         if (section && lines.at(-1) !== section) lines.push(section);
       }
       const rest = line.replace(/\[[^\]]*\]/g, '').trim();
@@ -65,8 +75,14 @@ export function parseFixedRecipeCaption(text: string): { style: string; lyrics: 
   return { style: sections.tags.join('\n').trim(), lyrics: (sections.lyrics ?? []).join('\n').trim() };
 }
 
-export function prepareFixedRecipeCaption(caption: string, lyrics: string): { style: string; lyrics: string } {
+export function prepareFixedRecipeCaption(caption: string, lyrics: string, trigger = ''): { style: string; lyrics: string } {
   const parsed = parseFixedRecipeCaption(caption);
-  return { style: parsed.style.split(/\s+/).join(' ').normalize('NFC'),
+  let style = parsed.style.split(/\s+/).join(' ').normalize('NFC');
+  const prefix = trigger.trim().normalize('NFC');
+  const suffix = style.slice(prefix.length);
+  if (prefix && !(style.startsWith(prefix) && (!suffix || /^[\s,.;:!?]/.test(suffix)))) {
+    style = style ? `${prefix}, ${style}` : prefix;
+  }
+  return { style,
     lyrics: cleanFixedRecipeLyrics(lyrics || parsed.lyrics).lyrics.normalize('NFC') };
 }
