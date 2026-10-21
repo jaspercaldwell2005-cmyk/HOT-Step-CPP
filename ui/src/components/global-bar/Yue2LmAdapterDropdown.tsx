@@ -1,5 +1,8 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { backendModelsOptions } from '../../queries/global-models/options';
+import { QueryError } from '../shared/QueryError';
+import { queryManager } from '../../queries/invalidation';
+import { apiClient } from '../../services/httpClient';
 // Yue2LmAdapterDropdown.tsx — Adapters cluster for a backend whose LM adapters
 // are ENGINE STATE rather than per-request parameters.
 //
@@ -109,7 +112,7 @@ function sameDials(a: Dials, b: Dials): boolean {
  *  the store refetches after every successful selection. */
 function useYue2Adapters() {
   const activeBackendId = useBackendStore(s => s.activeBackendId);
-  const { data: catalogue } = useQuery(backendModelsOptions(activeBackendId));
+  const { data: catalogue, isError, error, refetch } = useQuery(backendModelsOptions(activeBackendId));
 
 
   const meta = catalogue?.lmAdapterMeta ?? {};
@@ -142,6 +145,9 @@ function useYue2Adapters() {
   return {
     activeBackendId,
     catalogue,
+    isError,
+    error,
+    refetch,
     meta,
     pathsFor,
     dialsFor,
@@ -436,7 +442,7 @@ export const Yue2LmAdapterDropdown: React.FC = () => {
   const { capabilities } = useCapabilities();
   const selectModels = useBackendStore(s => s.selectModels);
   const {
-    activeBackendId, catalogue, meta, pathsFor, dialsFor, selectedFor, inForceFor,
+    activeBackendId, catalogue, isError, error, refetch, meta, pathsFor, dialsFor, selectedFor, inForceFor,
   } = useYue2Adapters();
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -445,6 +451,17 @@ export const Yue2LmAdapterDropdown: React.FC = () => {
   const [browsing, setBrowsing] = useState(false);
   const [importing, setImporting] = useState(false);
   useEffect(() => { setFolder(savedFolder); }, [savedFolder]);
+  const queryClient = useQueryClient();
+
+  // Silent: a failure gets the localized note below, not the global toast.
+  const importMut = useMutation({
+    mutationFn: (file: string) => apiClient.post<{ arPath: string; narPath: string; name?: string }>(
+      '/yue2/import-adapter', { path: file }, { silent: true }),
+    // The imported adapter must appear in the lists below even when the
+    // selectModels leg fails — the "pick it by hand" note promises it is there,
+    // and only a successful selection refetches the catalogue.
+    onSuccess: () => { void queryManager.invalidate(queryClient, backendModelsOptions(activeBackendId).queryKey); },
+  });
 
   /** A ComfyUI / ai-toolkit YuE2 adapter is one file holding both halves in
    *  the upstream naming. The server splits it into our AR + NAR pair; both
@@ -453,13 +470,7 @@ export const Yue2LmAdapterDropdown: React.FC = () => {
     setBusy(true);
     setNote(null);
     try {
-      const res = await fetch('/api/yue2/import-adapter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: file }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      const body = await importMut.mutateAsync(file);
       const ok = await selectModels({ lmAdapterAr: body.arPath, lmAdapterNar: body.narPath }, activeBackendId);
       setNote(ok
         ? t('globalBar.yue2AdapterImported',
@@ -532,6 +543,10 @@ export const Yue2LmAdapterDropdown: React.FC = () => {
           'Could not apply that {{half}} pick; the previous one is still in force.', { half }));
   };
 
+  if (isError && !catalogue) {
+    return <QueryError error={error} onRetry={() => void refetch()} />;
+  }
+
   if (!catalogue) {
     return <p className="text-[11px] text-zinc-500">{t('globalBar.yue2AdapterLoading', 'Loading adapters…')}</p>;
   }
@@ -541,6 +556,7 @@ export const Yue2LmAdapterDropdown: React.FC = () => {
 
   return (
     <div className="space-y-4">
+      {isError && <QueryError error={error} onRetry={() => void refetch()} compact />}
       {nothingTrained && (
         <p className="text-[11px] text-zinc-500 leading-relaxed">
           {t('globalBar.yue2AdapterNone',
