@@ -12,13 +12,16 @@
 // needs before an AudioContext may make sound, and it also fetches abcjs's
 // soundfont from its default CDN. Nothing is bundled.
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, Download, Loader2, RefreshCw, X } from 'lucide-react';
 import abcjs from 'abcjs';
 import 'abcjs/abcjs-audio.css';
 import { followNoteInBox } from '../../utils/abcFollow';
+import { auditAbcMeasures } from '../../utils/abcMeasureAudit';
+import { paintMeasureIssues } from '../../utils/abcMeasurePaint';
+import { AbcMeasureAuditPanel } from '../shared/AbcMeasureIssues';
 
 export interface Yue2ScorePreviewData {
   abc: string;
@@ -41,6 +44,9 @@ export const Yue2ScorePreviewModal: React.FC<Props> = ({ open, data, error, onCo
   const { t } = useTranslation();
   const scoreRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLDivElement | null>(null);
+  // Deterministic: same ABC, same report. Re-runs only when the score changes.
+  const abc = data?.abc;
+  const audit = useMemo(() => abc ? auditAbcMeasures(abc) : null, [abc]);
 
   useEffect(() => {
     if (!open || !data?.abc || !scoreRef.current) return;
@@ -51,7 +57,9 @@ export const Yue2ScorePreviewModal: React.FC<Props> = ({ open, data, error, onCo
     } catch {
       return;
     }
-    if (!tunes?.[0] || !audioRef.current || !abcjs.synth.supportsAudio()) return;
+    if (!tunes?.[0]) return;
+    paintMeasureIssues(tunes[0], scoreRef.current, audit && 'issues' in audit ? audit : null);
+    if (!audioRef.current || !abcjs.synth.supportsAudio()) return;
     audioRef.current.innerHTML = '';
     const control = new abcjs.synth.SynthController();
     const box = scoreRef.current.parentElement;
@@ -70,7 +78,7 @@ export const Yue2ScorePreviewModal: React.FC<Props> = ({ open, data, error, onCo
     // Continue/Cancel/Retry all close or replace the sheet; the synth keeps
     // playing on its own AudioContext unless it is told to stop.
     return () => { try { control.pause(); } catch { /* nothing was playing */ } };
-  }, [open, data?.abc]);
+  }, [open, data?.abc, audit]);
 
   // The whole score is already in the client, so this needs no server round-trip.
   // MuseScore, EasyABC and abcjs all read plain ABC, so a text blob is enough.
@@ -143,6 +151,7 @@ export const Yue2ScorePreviewModal: React.FC<Props> = ({ open, data, error, onCo
               <div className="bg-white rounded-lg border border-zinc-200 dark:border-white/10 overflow-y-auto overflow-x-hidden" style={{ maxHeight: '50vh' }}>
                 <div ref={scoreRef} className="text-black p-2 [&_svg]:fill-current [&_.abcjs-highlight]:fill-amber-500 [&_.abcjs-highlight]:stroke-amber-500" />
               </div>
+              <AbcMeasureAuditPanel audit={audit && 'issues' in audit ? audit : null} />
               <div ref={audioRef} className="text-xs" />
               <details className="text-[11px] text-zinc-500">
                 <summary className="cursor-pointer">{t('createPanel.yue2ScoreRaw', 'Raw ABC')}</summary>

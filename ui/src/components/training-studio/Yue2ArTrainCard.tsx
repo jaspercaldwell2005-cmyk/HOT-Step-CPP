@@ -36,7 +36,10 @@ import { runQueries } from '../../queries/training-runs/queries';
 import type { Yue2OptimOptions } from '../../services/trainingApi';
 import { assertRecipeWorker, resolveTrainingRecipe } from '../../services/trainingRecipesApi';
 import { followNoteInBox } from '../../utils/abcFollow';
+import { auditAbcMeasures } from '../../utils/abcMeasureAudit';
+import { paintMeasureIssues } from '../../utils/abcMeasurePaint';
 import { formatDateTime } from '../../utils/dateUtils';
+import { AbcMeasureAuditPanel } from '../shared/AbcMeasureIssues';
 import { Yue2OptimizerFields } from './Yue2OptimizerFields';
 
 import {
@@ -492,6 +495,9 @@ function Yue2SheetPreview({ datasetId, reloadKey, live }: { datasetId: string; r
   const detail = detailQuery.data ?? null;
   const detailError = detailQuery.error?.message ?? '';
   const loadingDetail = detailQuery.isPending;
+  // Small enough to recompute with the sheet; same ABC always gives the same
+  // report, and this card re-renders only when the preview changes.
+  const audit = detail?.abc ? auditAbcMeasures(detail.abc) : null;
   useReload(runQueries.sources(worker, datasetId).queryKey, reloadKey);
   // Two nested refs, not one. abcjs's `responsive: 'resize'` mode renders
   // straight into whatever element it's given and reaches into that SAME
@@ -539,6 +545,8 @@ function Yue2SheetPreview({ datasetId, reloadKey, live }: { datasetId: string; r
       return;
     }
     if (!tunes) return;
+    const report = auditAbcMeasures(detail.abc);
+    paintMeasureIssues(tunes[0], scoreRef.current, 'issues' in report ? report : null);
     const warnings = tunes[0]?.warnings;
     setRenderNote(warnings && warnings.length ? `abcjs warnings: ${warnings.slice(0, 3).join(' | ')}` : '');
     let synthControl: InstanceType<typeof abcjs.synth.SynthController> | null = null;
@@ -641,6 +649,7 @@ function Yue2SheetPreview({ datasetId, reloadKey, live }: { datasetId: string; r
                 <div ref={scoreOuterRef} style={{ maxHeight: 420 }} className="bg-white rounded-lg overflow-y-auto overflow-x-hidden">
                   <div ref={scoreRef} className="text-black p-2 [&_svg]:fill-current [&_.abcjs-highlight]:fill-amber-500 [&_.abcjs-highlight]:stroke-amber-500" />
                 </div>
+                <AbcMeasureAuditPanel audit={audit && 'issues' in audit ? audit : null} />
                 {renderNote && <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400 break-words">{renderNote}</div>}
                 {detail.abc_repaired && (
                   <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400 break-words">

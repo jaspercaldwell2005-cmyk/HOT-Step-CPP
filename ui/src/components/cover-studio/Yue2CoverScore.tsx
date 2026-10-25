@@ -1,14 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import abcjs from 'abcjs';
 import 'abcjs/abcjs-audio.css';
 import { useTranslation } from 'react-i18next';
 import { followNoteInBox } from '../../utils/abcFollow';
+import { auditAbcMeasures } from '../../utils/abcMeasureAudit';
+import { paintMeasureIssues } from '../../utils/abcMeasurePaint';
 import { abcSectionMarks, sectionAtChar, sectionColours, withBarNumbers } from '../../utils/abcSections';
 import { withChoirVocal } from '../../utils/abcChoirVocal';
 import { downloadAbcMidi } from '../../utils/abcMidi';
 import { barAtChar, barRanges } from '../../utils/abcSectionMove';
 import { AbcChart } from './AbcChart';
 import { MusicXmlImport } from './MusicXmlImport';
+import { AbcMeasureAuditPanel } from '../shared/AbcMeasureIssues';
 import { Toggle } from '../shared/Toggle';
 import { startPlayer, stopPlayer, type AbcPlayer, type ScoreRange } from './prepareView';
 import type { Yue2CoverJob, Yue2CoverReadiness } from '../../services/yue2CoverApi';
@@ -167,6 +170,9 @@ export const Yue2CoverScore: React.FC<Props> = p => {
   const [typed, setTyped] = useState({ for: p.abc, text: p.abc });
   if (typed.for !== p.abc) setTyped({ for: p.abc, text: p.abc });
   const draft = typed.text;
+  // The applied score, not the draft being typed: Apply changes p.abc, and
+  // only then is the new text measured and drawn.
+  const audit = useMemo(() => p.abc.trim() ? auditAbcMeasures(p.abc) : null, [p.abc]);
   // Plays from score section i, or from score bar n; replaced on every render of the ABC.
   const playFromRef = useRef<(index: number) => Promise<void>>(async () => {});
   const playBarRef = useRef<(bar: number) => Promise<void>>(async () => {});
@@ -237,9 +243,12 @@ export const Yue2CoverScore: React.FC<Props> = p => {
   const sheet = <div className={`grid gap-3 items-start ${p.wide ? 'grid-cols-2' : 'grid-cols-1'}`}>
     {/* Imported scores have no import row, so the toggle sits on the box. */}
     <div className="min-w-0">{(p.sourceMode !== 'audio' || p.readOnly) && p.abc.trim() && <div className="mb-1 flex justify-end">{viewToggle}</div>}{editor}</div>
-    <div className={`${p.abc.trim() ? '' : 'hidden'} min-w-0 bg-white rounded-lg border border-zinc-200 overflow-y-auto ${p.wide ? '' : 'max-h-48'}`}
-      style={{ height: boxHeight }}>
-      <div ref={scoreRef} className="text-black p-2 [&_svg]:fill-current [&_.prep-selected]:fill-fuchsia-600 [&_.abcjs-highlight]:fill-amber-500" />
+    <div className={`${p.abc.trim() ? '' : 'hidden'} min-w-0 space-y-1`}>
+      <div className={`bg-white rounded-lg border border-zinc-200 overflow-y-auto ${p.wide ? '' : 'max-h-48'}`}
+        style={{ height: boxHeight }}>
+        <div ref={scoreRef} className="text-black p-2 [&_svg]:fill-current [&_.prep-selected]:fill-fuchsia-600 [&_.abcjs-highlight]:fill-amber-500" />
+      </div>
+      <AbcMeasureAuditPanel audit={audit && 'issues' in audit ? audit : null} />
     </div>
     <div className={p.wide ? '' : 'order-last'}>
       {p.approved && <p className="text-xs text-emerald-600 dark:text-emerald-400">{t('cover.prepare.score.approved')}</p>}
@@ -283,6 +292,11 @@ export const Yue2CoverScore: React.FC<Props> = p => {
             const nodes = (item.abselem?.elemset ?? []).filter((n): n is SVGElement => !!n);
             if (bar !== null && nodes.length) barNodes.push({ bar, nodes });
           }
+    // Same bars, same numbering as `ranges`: underline them and badge the
+    // flagged ones. Audited from the rendered copy, whose added directive
+    // lines shift every character offset. The panel carries the words.
+    const rendered = auditAbcMeasures(abc);
+    paintMeasureIssues(tunes[0], scoreRef.current, 'issues' in rendered ? rendered : null);
     let lit: Element[] = [];
     let selected: SVGElement[] = [];
     applyHighlightRef.current = () => {
@@ -364,7 +378,7 @@ export const Yue2CoverScore: React.FC<Props> = p => {
     }, { displayLoop: false, displayRestart: true, displayPlay: true, displayProgress: true, displayWarp: false });
     void synth.setTune(tunes[0], false, click ? BAR_CLICK : {}).catch(() => {});
     return () => { range = null; try { synth.pause(); } catch { /* the player was never started */ } onPlayingRef.current(false); };
-  }, [p.abc, p.sourceMode, p.sourceKey, p.readOnly, click]);
+  }, [p.abc, p.sourceMode, p.sourceKey, p.readOnly, click, audit]);
 
   return (
     <div className="min-h-0 flex-shrink-0 border-t border-zinc-200 dark:border-white/10 p-4 space-y-3 overflow-y-auto max-h-[calc(100%-160px)]" style={{ height: p.height }}>
