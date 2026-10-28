@@ -269,7 +269,7 @@ grep -rn "queryKey:" src/components --include="*.tsx" | grep -v "Options()"     
 npx eslint src 2>&1 | grep -c "no-restricted-syntax"                                        # 0
 ```
 
-Expected UI suite: **457 pass, 0 fail, 1 skip**.
+Expected UI suite: **458 pass, 0 fail, 1 skip**.
 
 ## Phase history
 

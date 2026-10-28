@@ -287,22 +287,25 @@ rather than a cache entry.
 | `components/insta-gen/InstaGenPanel.tsx:212` | `songOptions(id)` / `readSong` |
 | `components/lyric-studio/QueuePanel.tsx:183-186` | A third LM-adapter read (next to `trainingQueries.lmAdapters` and `AdaptersDropdown`’s local options) |
 | `components/stem-studio/SourceSelector.tsx:49-50` | A second `recent-songs` resource (`studios/recent-songs`) with its own filter shape |
-| `services/stemStudioApi.ts:176`, `services/supersepApi.ts:119` | Rebuild progress keys/fns instead of using `extractProgressOptions` / `separationProgressOptions` |
+| `services/stemStudioApi.ts:178`, `services/supersepApi.ts:119` | Uses `extractProgressOptions` / `separationProgressOptions` through `waitForQuery` (closed 2026-10-28) |
 | `utils/yue2CaptionSource.ts:226-241` | Its own key and a blanket `catch` that turns every failure into “no caption source” |
 
 Each duplicate bypasses the factory’s `retry`, `staleTime` and invalidation
 contract. **Improvement:** call the owning factory; if a filter or endpoint
 differs, add it to the factory rather than forking the resource.
 
-**Status:** fixed for the component rows and `yue2CaptionSource`.
+**Status:** fixed, all rows.
 `RecordingsTab` uses `generationStatusOptions(id, { signal })`, `InstaGenPanel`
 uses `readSong`, `QueuePanel` uses `lmAdaptersOptions(folder)` (folder from the
 params store), `SourceSelector` uses `studioRecentSongsOptions(source)`, and
 `yue2CaptionSource` calls `trainingQueries.yue2CaptionSource(by)`: key, query
 function, stale policy and the server snapshot types live in
 `queries/training-data/queries.ts`, while the util keeps the inline error
-surface and its local cache. The two services still rebuild progress keys
-because the factories would import those services back (cycle).
+surface and its local cache. `waitForExtraction` / `waitForCompletion` now
+wait on `extractProgressOptions` / `separationProgressOptions` and read the
+result through the matching result factory. `queries/studios/resources.ts` and
+the two services import each other; the factory calls happen inside functions,
+so the ESM cycle is harmless at runtime and the bundler resolves it.
 
 #### 4.10 `localOptions` used directly in components
 
@@ -412,9 +415,13 @@ snapshot rollback on failure; the store was deleted. See the area README.
    `3000 : 15000` function. If its failures should back off, pass a `pollWhile`
    variant with a custom idle cadence; otherwise record it as a sanctioned fixed
    cadence in section 5.
-4. **`staleTime: 0` is common (41 sites).** Many are intentional one-shot
-   reads; others effectively make Query a request-deduplicator. Document the
-   intentional set in the area READMEs so a future reviewer does not “fix” them.
+4. **`staleTime: 0` is common (44 sites).** Many are intentional one-shot
+   reads; others effectively make Query a request-deduplicator. The two
+   intentional categories are recorded in
+   [tanstack-query.md](../../../docs/dev/tanstack-query.md) (job/status polls and
+   form-seeding `query()` reads), and the area READMEs note their own. Leaving
+   the rest as-is is acceptable; a future reviewer should check the category
+   before “fixing” a site.
 5. **Hook-placement convention.** **Resolved.** The sanctioned default is
    factory-in-component: `useQuery(factory(...))`, with the factory (key and
    fetcher) owned by an area. Named hooks are extracted only when the lifecycle
@@ -424,9 +431,10 @@ snapshot rollback on failure; the store was deleted. See the area README.
    long as they delegate to a factory.
 6. **No Devtools.** `@tanstack/react-query-devtools` is not installed. Add it
    as a dev-only dependency if cache/staleness debugging becomes routine.
-7. **`useQuery({ enabled: false })` as a cache slot** is intentional in
-   `useDownloadStream.ts:16-19` (SSE fills it). Keep, but record it in
-   `ui-server-state.md` alongside the other sanctioned exceptions.
+7. **`useQuery({ enabled: false })` as a cache slot.** **Resolved/recorded.**
+   Intentional in `useDownloadStream.ts:16-19` (SSE fills it) and listed in
+   [ui-server-state.md](../../../docs/dev/ui-server-state.md) with the other
+   sanctioned exceptions.
 
 ---
 
@@ -487,20 +495,18 @@ Landed in the first fix pass:
 | 4.6 | One `waitForSnapshot` in `queries/wait.ts`; area files re-export it. `waitForQuery` added. |
 | 4.7 | `refreshTrigger` removed from `RecentExtractions`/`RecentBuilds`/`RecentCovers`; parents invalidate at the completion site. |
 | 4.8 | Adapter folder scan is a `useMutation`. |
-| 4.9 | First four duplicates moved onto the owning factories (services/`yue2CaptionSource` noted above). |
+| 4.9 | All duplicates moved onto the owning factories, including the two studio services. |
 | 4.10 | All component `localOptions` declarations moved to area factories; duplicate response types replaced by exported ones. |
 | 4.11 | One `adapterScanOptions` owner. |
 | 4.6 (follow-up) | `followWorkflowJob` in `queries/workflowFollow.ts` replaces the two divergent studio/cover job-follow copies. |
 
 Still open, in rough priority order:
 
-1. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
-   `yue2CaptionSource` row is closed).
-2. **P7.1 (b–d)** — move `activeJob` reads onto `useActiveTrainingJob`, reduce
+1. **P7.1 (b–d)** — move `activeJob` reads onto `useActiveTrainingJob`, reduce
    the store to `activeJobId` + worker, and delete `useTrainingStream`.
-3. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
-   documenting intentional `staleTime: 0`, Devtools, and the disabled-observer
-   note.
+2. **P2#2–#4, #6** — queryable-POST cardinality, the `TrainingWorkerBar`
+   fixed cadence decision, the remaining `staleTime: 0` note, and the Devtools
+   decision.
 
 The usage counts in section 1 were re-measured after this pass; section 8 lists
 the commands used.
