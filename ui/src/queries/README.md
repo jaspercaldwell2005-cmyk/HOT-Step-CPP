@@ -407,21 +407,22 @@ snapshot rollback on failure; the store was deleted. See the area README.
    calls pass `silent: true` because a dropped tick is replaced by the next one.
    The `/generate/storm/stream` POST stays raw (streaming body), as do file
    export and shutdown.
-2. **Queryable POST cardinality.** `services/yue2CoverApi.ts:199-203` puts the
-   whole request body in the query key. The pattern is documented and valid,
-   but every distinct body creates a cache entry; bound the `filters` to stable
-   fields if the vocabulary grows.
+2. **Queryable POST cardinality.** **Fixed.** `services/yue2CoverApi.ts` keyed
+   these on the whole request body, so a different `sourceLabel`/`force` created
+   a second entry for the same song. `/source-metadata` now keys on
+   `songId`/`sourceAudioUrl` and `/sections/review` on `abc`/`lyrics` — the
+   only fields the answers depend on. The request still sends the full body.
 3. **Literal `refetchInterval`.** `TrainingWorkerBar.tsx:43` uses a hand-written
    `3000 : 15000` function. If its failures should back off, pass a `pollWhile`
    variant with a custom idle cadence; otherwise record it as a sanctioned fixed
    cadence in section 5.
-4. **`staleTime: 0` is common (44 sites).** Many are intentional one-shot
+4. **`staleTime: 0` is common.** **Accepted.** Many are intentional one-shot
    reads; others effectively make Query a request-deduplicator. The two
    intentional categories are recorded in
    [tanstack-query.md](../../../docs/dev/tanstack-query.md) (job/status polls and
-   form-seeding `query()` reads), and the area READMEs note their own. Leaving
-   the rest as-is is acceptable; a future reviewer should check the category
-   before “fixing” a site.
+   form-seeding `query()` reads), and the area READMEs note their own. A future
+   reviewer should check the category before “fixing” a site; no blanket sweep
+   is planned.
 5. **Hook-placement convention.** **Resolved.** The sanctioned default is
    factory-in-component: `useQuery(factory(...))`, with the factory (key and
    fetcher) owned by an area. Named hooks are extracted only when the lifecycle
@@ -448,7 +449,7 @@ snapshot rollback on failure; the store was deleted. See the area README.
 | Media blobs and peak files (`StemMixer.tsx:125`, `useAbEngine.ts:316`, `useStreamAudio.ts:121`, `audio/peaksClient.ts`) | Binary playback, not JSON server state. |
 | `/api/health` probes (`App.tsx:161-173`, `:465`) | Liveness transport used to reload the page; should not pollute the cache. |
 | Sidecar text reads (`utils/lrcUtils.ts:222`, `utils/wordLrcUtils.ts:57`) | Text payloads outside the JSON transport, keyed through `sharedKeys`. |
-| Queryable POST (`yue2CoverApi.ts:199`) | Read-only, idempotent, body in key; documented in `tanstack-query.md` F4#15. Adapter scans are a mutation instead. |
+| Queryable POST (`yue2CoverApi.ts`) | Read-only, idempotent; the key carries only the body fields the answer depends on. Documented in `tanstack-query.md` F4#15. Adapter scans are a mutation instead. |
 | `useDownloadStream` disabled observer | Deliberate SSE cache slot. |
 | `waitForSnapshot` / `waitForQuery` (`QueryObserver` outside React) | Services and stores cannot use hooks; the observer reuses the same cache and polling policy. |
 | Fixed-cadence `refetchInterval` (Directed Drift 2 s, VST GUI 1.5 s) | A dropped tick is replaced by the next one, so `pollWhile`’s error backoff adds latency without value. |
@@ -502,11 +503,10 @@ Landed in the first fix pass:
 | 4.11 | One `adapterScanOptions` owner. |
 | 4.6 (follow-up) | `followWorkflowJob` in `queries/workflowFollow.ts` replaces the two divergent studio/cover job-follow copies. |
 
-Still open, in rough priority order:
-
-1. **P2#2, #4** — queryable-POST cardinality and the remaining `staleTime: 0`
-   note. (P2#3 moved `TrainingWorkerBar` onto `pollWhile`; P2#6 decided against
-   Devtools.)
+No planned remediation items remain. **P2#2** (queryable-POST key
+cardinality) was fixed on 2026-10-28 and **P2#4** (`staleTime: 0`) is accepted
+as documented. (P2#3 moved `TrainingWorkerBar` onto `pollWhile`; P2#6 decided
+against Devtools.)
 
 The usage counts in section 1 were re-measured after this pass; section 8 lists
 the commands used.
@@ -637,5 +637,5 @@ store actions read the summary from the cache (`jobOf`) when they need its kind.
 stream, poll and terminal refresh; `useTrainingStream` and every duplicate
 `useRunEvents` call were deleted.
 
-Validation: `tsc -b` clean, UI suite **461 pass / 0 fail / 1 skip**, docs check
+Validation: `tsc -b` clean, UI suite **462 pass / 0 fail / 1 skip**, docs check
 ok.

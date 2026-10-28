@@ -268,7 +268,7 @@ only for the same reason.
 | Pattern | Where | Why it stays |
 |---|---|---|
 | A disabled query as a stream's cache slot: `enabled: false`, a `queryFn` that never runs, `initialData: []` | `components/model-manager/useDownloadStream.ts:16–19`, key `global-models/downloads` | The download SSE bridge (`queries/global-models/downloads.ts`) replaces the whole entry with each validated frame, so there is no snapshot to fetch |
-| A read-only POST with its request body in the key's `filters` (a "queryable POST") | `services/yue2CoverApi.ts:199–203`, `cover-lyrics/cover` for `/source-metadata` and `/sections/review` | An idempotent read that needs a body. Every distinct body is a new cache entry until `gcTime` reaps it, so the body should hold only fields that change the answer |
+| A read-only POST with its request body in the key's `filters` (a "queryable POST") | `services/yue2CoverApi.ts`, `cover-lyrics/cover` for `/source-metadata` and `/sections/review` | An idempotent read that needs a body. The `filters` are bounded to the fields that change the answer (song/url, or abc/lyrics), so request hints such as `sourceLabel` and `force` cannot multiply entries |
 | A `useQuery` mounted only for its side effect, with its result unused | `components/global-bar/BackendToggle.tsx:32` (`global-models/backends`), `components/global-bar/MonitorBar.tsx:29` (`global-models/monitor`) | The observer keeps the entry fetched, and the monitor polled, for the store projections that read it (`backendStore`, `vstChainStore`). The entry's liveness follows the component's mount |
 
 ## Consumer manifest

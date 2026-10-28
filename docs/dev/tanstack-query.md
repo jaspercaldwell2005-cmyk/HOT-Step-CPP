@@ -30,7 +30,7 @@ in the sanctioned table below.
 | **P6** — composers and dedup | One factory per entity, duplicate factories removed | F4 | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
 | **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Done.** 7.2 (queue projection) and 7.1(a–d) (one job cache, one stream opener, store keeps only the selected id) shipped (see §7) |
 
-**Verification (2026-10-28):** `tsc -b` clean; UI suite **461 pass / 0 fail /
+**Verification (2026-10-28):** `tsc -b` clean; UI suite **462 pass / 0 fail /
 1 skip**; whole-`src` ESLint **824 findings**, all pre-existing categories and
 zero project-guard hits; `npm run build` ✓; `node tools/docs/check-docs.mjs` →
 `ok`.
@@ -272,7 +272,7 @@ grep -rn "queryKey:" src/components --include="*.tsx" | grep -v "Options()"     
 npx eslint src 2>&1 | grep -c "no-restricted-syntax"                                        # 0
 ```
 
-Expected UI suite: **461 pass, 0 fail, 1 skip**.
+Expected UI suite: **462 pass, 0 fail, 1 skip**.
 
 ## Phase history
 
