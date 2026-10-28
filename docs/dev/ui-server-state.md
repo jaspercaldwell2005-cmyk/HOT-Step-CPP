@@ -503,11 +503,11 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `utils/mm3CaptionSource.ts` | shell-queue | - | - | - | - | Query-backed lireek read; client caption assembly |
 | `utils/paramProfiles.ts` | shell-queue | - | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `queries/shell-queue/lyrics.ts` | shell-queue | - | 1 | - | - | Query owner for shared `lrc`/`lyrics-json` (R5); owner and transport for shared `score-abc` |
-| `components/compare-studio/CompareStudio.tsx` | studios | compareApi | - | - | - | Open: song search calls `compareApi` directly and session state comes from `stores/compareStore.ts`; no Query owner ([tanstack-query.md](tanstack-query.md) F3) |
-| `components/compare-studio/DiffTrace.tsx` | studios | compareApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
-| `components/compare-studio/SessionView.tsx` | studios | compareApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
-| `components/compare-studio/TakeRow.tsx` | studios | compareApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
-| `components/compare-studio/useAbEngine.ts` | studios | - | 1 | - | - | Binary audio transport for the A/B engine's takes |
+| `components/compare-studio/CompareStudio.tsx` | compare | compareApi | - | - | - | Query consumer: sessions, session detail and library search; create/delete are mutations |
+| `components/compare-studio/DiffTrace.tsx` | compare | compareApi | - | - | - | Props only; the parent owns the diff query |
+| `components/compare-studio/SessionView.tsx` | compare | compareApi | - | - | - | Query consumer: per-take `analysis` and the active `diff`; archive/delete are mutations |
+| `components/compare-studio/TakeRow.tsx` | compare | compareApi | - | - | - | Query consumer: score and remove-take mutations over the session cache |
+| `components/compare-studio/useAbEngine.ts` | compare | - | 1 | - | - | Binary audio transport for the A/B engine's takes |
 | `components/cover-studio/PrepareLyrics.tsx` | cover-lyrics | yue2CoverApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `components/cover-studio/PrepareStructure.tsx` | cover-lyrics | yue2CoverApi | - | - | 1 | Client/types/props; the interval loops a recording's playback window, no server reads |
 | `components/cover-studio/SectionPlayback.tsx` | cover-lyrics | - | - | - | 2 | Client audio playback timers; no server reads |
@@ -524,9 +524,10 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `queries/sa3-previews/queries.ts` | training-runs | sa3PreviewApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/writes.ts` | foundation | httpClient | - | - | - | Query owner/policy: shared write helpers (`writeAndInvalidate`, `useUpload`) |
 | `services/axiosClient.ts` | foundation | apiError | 1 | - | - | Transport: the axios instance, its fetch adapter and the global error catch |
-| `services/compareApi.ts` | studios | httpClient | - | - | - | Transport; its reads have no Query caller yet (`stores/compareStore.ts`) |
+| `services/compareApi.ts` | compare | httpClient | - | - | - | Transport; `queries/compare` owns the reads and commands |
 | `services/sa3PreviewApi.ts` | training-runs | httpClient | - | - | - | Transport; area Query caller owns reads, commands/streams explicit |
 | `services/updatesApi.ts` | shell-queue | httpClient | - | - | - | Transport; area Query caller owns reads, commands/streams explicit |
-| `stores/compareStore.ts` | studios | compareApi | - | - | - | Open: session list, session, analysis and diff reads held in a hand-rolled store, not Query ([tanstack-query.md](tanstack-query.md) F3) |
+| `queries/compare/queries.ts` | compare | compareApi | - | - | - | Query owner for sessions, session detail, picker search, analysis and diff |
+| `queries/compare/writes.ts` | compare | compareApi | - | - | - | Query owner: compare commands and the optimistic score cache follow-up |
 | `components/training-studio/useHeartmulaController.ts` | training-data | trainingApi | - | - | - | Query consumer (`training-data/heartmula-status`, `heartmula-previews`); prepare/train/batch are commands, the preview retry is a mutation |
 | `components/settings/useEnvSettingsForm.ts` | shell-queue | api | - | - | - | Query consumer (`shell-queue/env`, GPUs) and mutation owner (save/restart); draft seeded only while clean, `queryManager.env.values` invalidates |

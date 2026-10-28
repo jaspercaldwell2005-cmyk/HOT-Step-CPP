@@ -157,16 +157,17 @@ when a second consumer appears.
 
 | API | Count | Note |
 |---|---|---|
-| `useQuery` | 137 sites / 86 files | Declarative reads — the norm |
-| `useQueries` | 3 / 3 | Worker dispatch, worker list, curated profile |
-| `useMutation` | 116 / 45 | Named writes carry a pending/error lifecycle |
+| `useQuery` | 141 sites / 88 files | Declarative reads — the norm |
+| `useQueries` | 4 / 4 | Worker dispatch, worker list, curated profile, compare takes |
+| `useMutation` | 121 / 46 | Named writes carry a pending/error lifecycle |
 | `queryClient.query()` | 64 / 29 | One-shot reads; form/store/service seeding |
 | `queryClient.fetchQuery` | 0 | Renamed by P1; guarded |
-| `getQueryData` | 4 / 4 | SSE diff, optimistic restore, projections, peaks |
-| `setQueryData` | 19 / 11 | SSE writes and deliberate in-place patches |
-| `useQueryClient` | 50 / 48 | Mostly to call `queryManager` |
+| `getQueryData` | 5 / 5 | SSE diff, optimistic restore, projections, peaks, compare rollback |
+| `setQueryData` / `setQueriesData` | 32 / 8 | SSE writes and deliberate in-place patches; `setQueriesData` spans cached lists |
+| `useQueryClient` | 55 / 49 | Mostly to call `queryManager` |
 | `invalidateQueries` | 2 calls, 1 file | `queries/invalidation.ts` only |
-| `cancelQueries` / `removeQueries` | 18 / 6 | Allowed anywhere; they drop work, they do not refetch |
+| `cancelQueries` / `removeQueries` | 19 / 7 | Allowed anywhere; they drop work, they do not refetch |
+| `queryOptions()` | 111 / 18 | Area slices; generic helpers live in `global-models` and `cover-lyrics` |
 
 ## Sanctioned exceptions
 
@@ -190,14 +191,13 @@ when a second consumer appears.
 
 ## Open work
 
-1. **Read failure states (§4.12) — closed.** `components/shared/QueryError.tsx`
-   plus inline `isError` handling covers every consumer. The last real gaps
-   (reference browser, Ollama model picker, PP-VAE/StableStep/adapter probes)
-   were fixed 2026-10-27; the six remaining observers are sanctioned below.
-2. **`compareStore` (§4.13).** Session list/detail/diff/analysis still live in
-   a hand-rolled store instead of a `queries/compare/` slice. Largest remaining
-   migration.
-3. **P7** — the two structural migrations below.
+1. **P7** — the two structural migrations below.
+
+The earlier open items are closed: §4.12 read failure states on 2026-10-27, and
+the `compareStore` migration (§4.13) on the same day. Compare now has its own
+`queries/compare/` slice: read factories for sessions/detail/search/analysis/
+diff, mutation hooks for every command, and an optimistic score cache with a
+snapshot rollback. The hand-rolled store was deleted.
 
 ## P7 — structural design (deferred)
 
@@ -263,7 +263,7 @@ grep -rn "queryKey:" src/components --include="*.tsx" | grep -v "Options()"     
 npx eslint src 2>&1 | grep -c "no-restricted-syntax"                                        # 0
 ```
 
-Expected UI suite: **452 pass, 0 fail, 1 skip**.
+Expected UI suite: **457 pass, 0 fail, 1 skip**.
 
 ## Phase history
 
@@ -281,4 +281,6 @@ Expected UI suite: **452 pass, 0 fail, 1 skip**.
   in `keys.ts`, `training-runs` key names centralised in `TR`, all factories
   return `queryOptions`, and the last five direct `localOptions` component
   usages moved onto their area factories. Read-failure sweep closed §4.12
-  (reference browser, Ollama picker, PP-VAE/StableStep probes).
+  (reference browser, Ollama picker, PP-VAE/StableStep probes). Compare moved
+  into `queries/compare/` (§4.13): read factories, mutation hooks, optimistic
+  scoring with rollback, and the hand-rolled store deleted.

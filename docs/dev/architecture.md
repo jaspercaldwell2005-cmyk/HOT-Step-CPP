@@ -153,8 +153,8 @@ ownership. R1, R2 and R5 now follow this rule through the shared reads.
 Later changes are not re-audited here. The axios transport (`18897e6c`) moved every
 service file's JSON calls and uploads onto `httpClient.ts`, so the raw fetches left under
 `services/` are the transport itself and three stream readers (assistant chat, the
-lireek SSE helper and workflow events). `components/compare-studio/useAbEngine.ts`,
-`stores/compareStore.ts` and `components/storm/DriftPanel.tsx` were added after the audit
+lireek SSE helper and workflow events). `components/compare-studio/useAbEngine.ts`
+(media transport) and `components/storm/DriftPanel.tsx` were added after the audit
 and fetch directly; they have no disposition yet. Rows below that name raw fetches in
 service files, upload components, MetadataEditorModal or `queries/studios/lyrics.ts`
 describe the audit, not the current code.
@@ -400,7 +400,7 @@ Every API mount is registered in `server/src/index.ts`. Route files are in
 | Song Builder | `/api/builder` | `songBuilder.ts` | `songBuilder/sectionOps.ts` (section renders run as a workflow kind), `db/database.ts` | `song-builder/` | seed-latent path of `/synth` |
 | STORM (continuous stream) | `/api/generate/storm/*` | `generate.ts` | `storm/slot.ts`, `storm/drift.ts`, `streamSessions/`, `aceClient.ts` | `storm/` | `/synth`, `/yue2/synth`, `/sa3-synth` for ACE, YuE2 and SA3 slots |
 | Stream sessions and recordings | `/api/stream-sessions` | `streamSessions.ts` | `streamSessions/` | `services/streamSessionsApi.ts`, `stores/mm3StreamStore.ts`, `hooks/useStreamAudio.ts` | none of its own |
-| Compare Studio | `/api/compare` | `compare.ts` | `compare/` (`store.ts`, `analyzer.ts`) | `compare-studio/`, `services/compareApi.ts` | none |
+| Compare Studio | `/api/compare` | `compare.ts` | `compare/` (`store.ts`, `analyzer.ts`) | `compare-studio/`, `queries/compare/`, `services/compareApi.ts` | none |
 | MIDI Studio | `/api/midi-studio` | `midiStudio.ts` | `muscriptor.ts`, `midiParser.ts` | `midi-studio/` | `ace-midi` binary |
 | Training Studio | `/api/training` | `training.ts` | `training/*` | `training-studio/` | `ace-train`, `ace-caption`, `/understand` |
 | Training workers (training on another PC) | `/api/workers` (controller), `/api/training/worker` (worker) | `workers.ts` | `training/trainingWorkers.ts`, `training/workerUpdate.ts`, `training/yue2Mirror.ts` | `training-studio/WorkersPanel.tsx`, `training-studio/TrainingWorkerBar.tsx` | none |

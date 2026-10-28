@@ -21,7 +21,7 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { apiClient } from '../services/httpClient';
 
-export type Area = 'training-data' | 'training-runs' | 'global-models' | 'cover-lyrics' | 'studios' | 'shell-queue';
+export type Area = 'training-data' | 'training-runs' | 'global-models' | 'cover-lyrics' | 'studios' | 'shell-queue' | 'compare';
 
 /** Resources more than one area reads. Any area may query one directly with
  *  its canonical key and canonical read below, so no area waits on another's

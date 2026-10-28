@@ -47,22 +47,23 @@ helpers and (occasionally) hooks:
 | `cover-lyrics/` | Lyric Studio (lireek), cover workflows, sidecar snapshots |
 | `training-data/` | Datasets, samples, preparation, training reads |
 | `training-runs/` | Jobs, review, scores, ladder, workers, status polls, run SSE |
+| `compare/` | Compare sessions, take analysis, diff trace, library search for the picker |
 
 ### Actual usage (non-test, current — re-measured 2026-10-27)
 
 | API | Calls / files | Notes |
 |---|---|---|
-| `useQuery` | **137** calls in **86** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
-| `useQueries` | **3** | `CuratedProfileModal`, `WorkersPanel`, `TrainingWorkerBar`. |
-| `useMutation` | **116** calls in **45** files | Writes with a visible pending/error lifecycle. |
+| `useQuery` | **141** calls in **88** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
+| `useQueries` | **4** | `CuratedProfileModal`, `WorkersPanel`, `TrainingWorkerBar`, compare `SessionView`. |
+| `useMutation` | **121** calls in **46** files | Writes with a visible pending/error lifecycle. |
 | `queryClient.query(...)` | **64** | Imperative one-shot reads / form seeding / store and service reads. No `fetchQuery` remains (ESLint guard in `ui/eslint.config.js`). |
-| `useQueryClient()` | **50** calls in **48** files | Mostly to call `queryManager` invalidation helpers. |
-| `setQueryData` | **19** | In-place patches and SSE updates. |
-| `getQueryData` | **4** | `sseBridge` (diff detection), `SongBuilder` (optimistic restore), `global-models/projection`, `audio/peaksClient` (sync paint). |
+| `useQueryClient()` | **55** calls in **49** files | Mostly to call `queryManager` invalidation helpers. |
+| `setQueryData` / `setQueriesData` | **32 / 8** | In-place patches and SSE updates; `setQueriesData` widens one patch across cached lists. |
+| `getQueryData` | **5** | `sseBridge` (diff detection), `SongBuilder` (optimistic restore), `global-models/projection`, `audio/peaksClient` (sync paint), compare score rollback. |
 | `invalidateQueries` | **2 calls, 1 file** | `queries/invalidation.ts` only. The ESLint guard makes any other call an error. |
-| `cancelQueries` / `removeQueries` | **18 / 6** | Allowed anywhere; they drop work, they do not refetch. |
-| `queryOptions(...)` | **105** | Area slices plus the generic `localOptions`/`snapshotOptions` helpers. |
-| Query-layer tests | **14** files | Keys, contract, SSE bridge, each area, training hooks. |
+| `cancelQueries` / `removeQueries` | **19 / 7** | Allowed anywhere; they drop work, they do not refetch. |
+| `queryOptions(...)` | **111** calls in **18** files | Area slices plus the generic `localOptions`/`snapshotOptions` helpers. |
+| Query-layer tests | **15** files | Keys, contract, SSE bridge, each area, compare, training hooks. |
 
 ---
 
@@ -74,11 +75,11 @@ helpers and (occasionally) hooks:
 | Query keys | **Good** | Canonical five-slot schema; session epoch prevents cross-login leakage. |
 | Invalidation ownership | **Good** | One `invalidateQueries` call site; `queryManager` groups + events. |
 | `useQuery` reads | **Mostly good** | Factory-first, auth-aware, `pollWhile` for jobs. Residual inline keys and imperative reads. |
-| `useMutation` writes | **Good** | Broad adoption; the audited missing invalidations (4.4) are fixed. Writes owned by `compareStore` remain outside Query (4.13). |
+| `useMutation` writes | **Good** | Broad adoption; the audited missing invalidations (4.4) are fixed, and Compare sessions now write through mutations. |
 | Polling | **Good** | Network polling is Query-owned (`pollWhile`/`refetchInterval`) or goes through `waitFor*`; the only raw network intervals left are the sanctioned health probe and the queue projection's executor cadence. |
-| Error surfacing | **Mixed** | Transport owns toast notification, but many reads never render a failure state. |
+| Error surfacing | **Good** | Transport owns toast notification; reads render `QueryError` or a sanctioned empty state (§4.12). |
 | SSE integration | **Good** | Coalesced invalidation, replay-safe `once`, scoped teardown. |
-| Non-React stores | **Mixed** | `writeAndInvalidate` used widely; `compareStore` is a server-state island. |
+| Non-React stores | **Good** | `writeAndInvalidate` used widely; every remaining store is client state (Compare was the last server-state island). |
 
 ---
 
@@ -381,18 +382,20 @@ handling landed across the consumers. The last real cases were fixed on
 
 #### 4.13 `compareStore` is a server-state island
 
-`stores/compareStore.ts:98-210` performs its own list/detail/diff/analysis
-loading, dedupes analysis requests in a module `Map`, tracks `loading`
-manually, and applies optimistic score updates by hand. Nothing goes through
-Query, so compare-studio gets none of the stale/retry/GC/invalidation policy
-and cannot be refreshed by `queryManager`.
+`stores/compareStore.ts:98-210` performed its own list/detail/diff/analysis
+loading, deduped analysis requests in a module `Map`, tracked `loading`
+manually, and applied optimistic score updates by hand. Nothing went through
+Query, so compare-studio got none of the stale/retry/GC/invalidation policy
+and could not be refreshed by `queryManager`.
 
 **Improvement:** treat Compare sessions as another resource slice
 (`queries/compare/`): `useQuery` for lists/details/diffs, `useMutation` for
-add/remove/scores/archive, and keep only selection/UI state in the store. This
-is the largest remaining migration if the contract is meant to be app-wide.
+add/remove/scores/archive, and keep only selection/UI state in the store.
 
-**Status:** still open — the largest remaining migration; tracked as §7 priority #2.
+**Status: closed (2026-10-27).** `queries/compare/queries.ts` owns the five
+read factories; `writes.ts` owns create/delete/archive/remove-take/score.
+Scoring is optimistic on both the session entry and every cached list, with a
+snapshot rollback on failure; the store was deleted. See the area README.
 
 ### P2 — consistency and ergonomics
 
@@ -493,10 +496,9 @@ Landed in the first fix pass:
 
 Still open, in rough priority order:
 
-1. **4.13** — `compareStore` migration into a `queries/compare/` slice.
-2. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
+1. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
    `yue2CaptionSource` row is closed).
-3. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
+2. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
    documenting intentional `staleTime: 0`, Devtools, and the disabled-observer
    note.
 
@@ -575,5 +577,25 @@ Final inventory for this pass: `useQuery` **137/86**, `queryClient.query()`
 **64/29**, `useMutation` **116/45**, `invalidateQueries` **2 calls in one file**,
 0 guard-rule hits. Validation: `tsc -b` clean, UI suite **452 pass / 0 fail /
 1 skip**, `npm run build` ✓, ESLint **824 findings / 0 guard hits**.
+
+---
+
+## 11. Compare migration (2026-10-27)
+
+`stores/compareStore.ts` is deleted. `queries/compare/` owns the five reads
+(sessions, session, picker search, analysis, diff) and the five commands
+(create, delete, archive, remove-take, score). Scores are optimistic on the
+session entry and every cached list with a snapshot rollback. Section 4.13 is
+closed and the area README records the cache shapes.
+
+Re-measured inventory after the migration: `useQuery` **141/88**, `useQueries`
+**4/4**, `useMutation` **121/46**, `setQueryData` / `setQueriesData` **32/8**,
+`getQueryData` **5/5**, `useQueryClient` **55/49**, `cancelQueries` /
+`removeQueries` **19/7**, `queryOptions` **111/18**. Validation: `tsc -b`
+clean, UI suite **457 pass / 0 fail / 1 skip**, `npm run build` ✓, ESLint
+**824 findings / 0 guard-rule hits**, docs check ok. The only ESLint findings
+in `compare-studio` are the pre-existing `set-state-in-effect` and
+`exhaustive-deps` reports in `TakeRow`/`useAbEngine`; the new query modules
+are clean.
 
 
