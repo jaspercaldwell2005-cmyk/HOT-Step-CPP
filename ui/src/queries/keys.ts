@@ -197,7 +197,3 @@ export const SONG_VIEWS: QueryKey[] = [
   resourceKey(SHARED.songs), resourceKey(SHARED.song), resourceKey('shell-queue/recent-songs'),
   resourceKey('studios/recent-songs'), resourceKey('cover-lyrics/cover-songs'),
 ];
-
-/** P2.4: invalidation moved to the one global manager (invalidation.ts);
- *  these re-exports keep existing importers compiling until P6 deletes them. */
-export { invalidateSidecars, invalidateSongViews } from './invalidation';

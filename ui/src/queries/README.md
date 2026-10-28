@@ -3,7 +3,7 @@
 Audited **2026-10-23** against `ui/src`, with `@tanstack/react-query` `^5.104.3`.
 This README describes the server-state layer in `queries/`, records where the
 app actually uses TanStack Query, and lists the places where the integration is
-still incomplete or inconsistent. [Section 7](#7-remediation-status-2026-10-23)
+still incomplete or inconsistent. [Section 7](#7-remediation-status-2026-10-23-updated-2026-10-24)
 records the first fix pass; the findings in section 4 keep their original
 evidence and carry a status line.
 
