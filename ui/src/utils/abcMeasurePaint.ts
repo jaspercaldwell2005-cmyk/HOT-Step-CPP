@@ -6,7 +6,7 @@
 // a tooltip. Bars with no rendered notes (a chord-only bar) have nothing to
 // underline and are left to the list panel.
 
-import { issuesByBar, measureIssueText, type MeasureAudit, type MeasureIssueKind } from './abcMeasureAudit';
+import { beatCount, formatBeats, issuesByBar, measureIssueText, type MeasureAudit, type MeasureIssue, type MeasureIssueKind } from './abcMeasureAudit';
 
 interface RenderedItem {
   startChar?: number;
@@ -102,9 +102,13 @@ export function paintMeasureIssues(
     group.setAttribute('class', `abcjs-measure-issue abcjs-measure-issue-${kind}`);
     group.setAttribute('data-abc-bar', String(bar));
 
+    const primary = issues.find(issue => issue.kind === kind) ?? issues[0];
+    const reason = issues.map(issue => measureIssueText(issue)).join(' · ');
     const title = document.createElementNS(NS, 'title');
-    title.textContent = issues.map(issue => measureIssueText(issue)).join(' · ');
+    title.textContent = reason;
     group.append(title);
+    group.setAttribute('role', 'img');
+    group.setAttribute('aria-label', reason);
 
     const underline = document.createElementNS(NS, 'line');
     Object.entries({
@@ -128,6 +132,67 @@ export function paintMeasureIssues(
     badge.append(circle, glyph);
     group.append(badge);
 
+    // The short reason sits beside the badge, so the score itself says why the
+    // bar is flagged without needing a hover.
+    const label = document.createElementNS(NS, 'text');
+    Object.entries({
+      x: minX + 14, y: badgeY, fill: tone, 'font-size': 7.5, 'font-weight': 600,
+      'dominant-baseline': 'central', 'paint-order': 'stroke', stroke: '#ffffff',
+      'stroke-width': 2, 'stroke-linejoin': 'round',
+    }).forEach(([key, value]) => label.setAttribute(key, String(value)));
+    label.textContent = shortReason(primary);
+    group.append(label);
+
+    // A short bar stops before its meter does. Mark that point on the right,
+    // where the missing timing would have continued.
+    let gapLabel: SVGTextElement | null = null;
+    if (primary.kind === 'short' && primary.gapBeat !== undefined) {
+      const stop = document.createElementNS(NS, 'line');
+      Object.entries({
+        x1: maxX + 1, x2: maxX + 1, y1: minY, y2: maxY + 3,
+        stroke: tone, 'stroke-width': 1.5, 'stroke-dasharray': '2 2',
+      }).forEach(([key, value]) => stop.setAttribute(key, String(value)));
+      group.append(stop);
+
+      const where = document.createElementNS(NS, 'text');
+      Object.entries({
+        x: maxX - 1, y: badgeY, fill: tone, 'font-size': 7.5, 'font-weight': 600,
+        'text-anchor': 'end', 'dominant-baseline': 'central',
+        'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 2, 'stroke-linejoin': 'round',
+      }).forEach(([key, value]) => where.setAttribute(key, String(value)));
+      where.textContent = `from beat ${formatBeats(primary.gapBeat)}`;
+      group.append(where);
+      gapLabel = where;
+    }
+
+    // Labels must never spill into the neighbouring bar or off the SVG. Drop
+    // the words when the bar is too narrow; the badge and its tooltip remain.
+    let gapWidth = gapLabel ? textWidth(gapLabel) : 0;
+    if (gapLabel && gapWidth > 0 && maxX - 1 - gapWidth < minX + 2) {
+      gapLabel.remove();
+      gapLabel = null;
+      gapWidth = 0;
+    }
+    const leftLimit = gapLabel ? maxX - 1 - gapWidth - 4 : maxX - 1;
+    const labelWidth = textWidth(label);
+    if (labelWidth > 0 && minX + 14 + labelWidth > leftLimit) label.remove();
+
     svg.append(group);
+  }
+}
+
+/** Rendered text width, or 0 when the DOM cannot measure (tests, no layout). */
+function textWidth(node: SVGTextElement): number {
+  try { return node.getComputedTextLength(); } catch { return 0; }
+}
+
+/** The smallest true statement about a flag, for the on-score label. */
+function shortReason(issue: MeasureIssue): string {
+  const beats = formatBeats(beatCount(issue.missing, issue.meter));
+  switch (issue.kind) {
+    case 'short': return `missing ${beats}`;
+    case 'long': return `over ${beats}`;
+    case 'empty': return 'no notes';
+    case 'unreadable': return 'unreadable';
   }
 }

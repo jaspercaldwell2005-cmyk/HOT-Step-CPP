@@ -9,9 +9,11 @@
 // from its meter, with the exact amount missing or over.
 //
 // Everything here is arithmetic on the text: no audio, no timing callbacks and
-// no randomness. The same ABC always produces the same report. Notation this
-// reader does not model (tuplets, broken rhythm, voice overlays) is reported as
-// unreadable instead of guessed at, so a bar is never called short by mistake.
+// no randomness. The same ABC always produces the same report. Tuplets
+// (`(3`, `(3:2:3`), broken rhythm (`>`, `>>`, `<`, `<<`) and slurs are measured
+// the way abcjs plays them. Notation this reader does not model (voice
+// overlays) is reported as unreadable instead of guessed at, so a bar is never
+// called short by mistake.
 
 /** Why a bar is flagged. `short`/`long` are timing; `empty` is a bar with no
  *  note or rest at all (often a chord symbol with no duration); `unreadable`
@@ -34,6 +36,12 @@ export interface MeasureIssue {
   kind: MeasureIssueKind;
   /** The bar contains at least one sounding note (chord-of-notes included). */
   hasNotes: boolean;
+  /** Timed note/chord events in the bar (a chord counts once). */
+  notes: number;
+  /** Timed events including rests (`z`/`x`). */
+  events: number;
+  /** The bar's ABC text, so the panel can show exactly what was measured. */
+  barText: string;
   /** Beat (1-based) where a short bar stops, i.e. where timing is missing. */
   gapBeat?: number;
   /** The token this reader could not measure, for `unreadable`. */
@@ -79,7 +87,7 @@ interface BarScan {
   /** Whole notes the bar holds. */
   duration: number;
   notes: number;
-  sounds: number;
+  events: number;
   token?: string;
   /** Meter set at the start of this bar; applies to it and the bars after. */
   meter?: string;
@@ -143,11 +151,84 @@ function isWholeBarRest(text: string): number | null {
   return Math.max(1, Number(m[1] || 1));
 }
 
+/** abcjs's default "p notes in the time of q" table (`src/parse/abc_parse_music.js`). */
+const TUPLET_Q: Record<number, number> = { 2: 3, 3: 2, 4: 3, 5: 2, 6: 2, 7: 2, 8: 3, 9: 2 };
+
+interface Tuplet { factor: number; notes: number; next: number }
+
+/** `(p`, `(p:q`, `(p::r` or `(p:q:r` starting at `at`, read the way abcjs does.
+ *  Returns null for a plain slur `(`. */
+function readTuplet(text: string, at: number): Tuplet | null {
+  const p = Number(text[at + 1]);
+  if (!(p >= 2 && p <= 9)) return null;
+  let i = at + 2;
+  let q = TUPLET_Q[p], r = p;
+  if (text[i] === ':') {
+    i++;
+    if (/[1-9]/.test(text[i] ?? '')) q = Number(text[i++]);
+    if (text[i] === ':') {
+      i++;
+      if (/[1-9]/.test(text[i] ?? '')) r = Number(text[i++]);
+    }
+  }
+  return { factor: q / p, notes: r, next: i };
+}
+
+/** Broken rhythm: `>` makes the note before long and the note after short,
+ *  `<` the reverse; repeated arrows use 1.75/0.25, 1.875/0.125. */
+function readBroken(text: string, at: number): { before: number; after: number; next: number } {
+  const mark = text[at];
+  let count = 1;
+  while (count < 3 && text[at + count] === mark) count++;
+  const power = 2 ** count;
+  const long = (power * 2 - 1) / power, short = 1 / power;
+  return mark === '>'
+    ? { before: long, after: short, next: at + count }
+    : { before: short, after: long, next: at + count };
+}
+
 /** One bar's length and contents, or the token that stopped the reader. */
 function scanBar(text: string, unit: number): BarScan {
-  let i = 0, duration = 0, notes = 0, sounds = 0;
+  let i = 0, duration = 0, notes = 0, events = 0;
   let unitNow = unit, meter: string | undefined, nextMeter: string | undefined, nextUnit: number | undefined;
-  const bad = (token: string): BarScan => ({ duration, notes, sounds, token });
+  let last = 0;          // whole notes in the previous timed event
+  let nextFactor = 1;    // broken-rhythm factor owed to the next timed event
+  let tupletLeft = 0;    // timed events still inside the current tuplet
+  let tupletFactor = 1;  // q / p
+  const bad = (token: string): BarScan => ({ duration, notes, events, token });
+
+  /** Count one note/chord or rest, applying the tuplet and broken rhythm. */
+  const timed = (mult: number, note: boolean) => {
+    let length = mult * unitNow;
+    if (tupletLeft > 0) length *= tupletFactor;
+    length *= nextFactor;
+    nextFactor = 1;
+    duration += length;
+    last = length;
+    events++;
+    if (note) notes++;
+    if (tupletLeft > 0) tupletLeft--;
+  };
+  /** Dots and `~` are decorations in abcjs (they do not lengthen a note), and
+   *  a `-` is a tie: consume them without changing the bar's total. */
+  const decorations = (at: number): number => {
+    while (text[at] === '.' || text[at] === '~') at++;
+    if (text[at] === '-') at++;
+    return at;
+  };
+  /** Consume decorations and broken rhythm after an event. */
+  const afterEvent = (at: number): number => {
+    for (;;) {
+      at = decorations(at);
+      if (text[at] !== '>' && text[at] !== '<') return at;
+      if (last === 0) { at++; continue; } // a leading arrow is an accent
+      const broken = readBroken(text, at);
+      duration += last * (broken.before - 1);
+      last *= broken.before;
+      nextFactor = broken.after;
+      at = broken.next;
+    }
+  };
 
   while (i < text.length) {
     const c = text[i];
@@ -171,7 +252,7 @@ function scanBar(text: string, unit: number): BarScan {
           if (!next) return bad(`[${inner}]`);
           // Before the bar's first event it governs this bar; after one it
           // waits for the next bar line, as ABC time signatures do.
-          if (sounds === 0 && notes === 0) meter = next; else nextMeter = next;
+          if (events === 0 && notes === 0) meter = next; else nextMeter = next;
         } else if (key === 'L') {
           const next = unitOf(value);
           if (next === null) return bad(`[${inner}]`);
@@ -184,9 +265,8 @@ function scanBar(text: string, unit: number): BarScan {
       // `[CEG]` is a chord of notes: one event, length written after `]`.
       const len = readLength(text, close + 1);
       if (!len) return bad(text.slice(i, close + 1));
-      duration += len.mult * unitNow;
-      notes++; sounds++;
-      i = len.next;
+      timed(len.mult, true);
+      i = afterEvent(len.next);
       continue;
     }
     if (c === '!' || c === '+') {
@@ -199,9 +279,19 @@ function scanBar(text: string, unit: number): BarScan {
       i = close < 0 ? text.length : close + 1;
       continue;
     }
-    // Tuplets, broken rhythm and voice overlays change neighbouring lengths;
-    // guessing would turn a readable bar into a false "short" report.
-    if (c === '(' || c === '>' || c === '<' || c === '&') return bad(text.slice(i));
+    // A `(` with a number is a tuplet; without one it is a slur. `&` merges
+    // two independent timelines and cannot be measured as one total.
+    if (c === '(') {
+      const tuplet = readTuplet(text, i);
+      if (tuplet) {
+        if (tupletLeft === 0) { tupletFactor = tuplet.factor; tupletLeft = tuplet.notes; }
+        i = tuplet.next;
+      } else i++;
+      continue;
+    }
+    if (c === ')') { i++; continue; }
+    if (c === '&') return bad(text.slice(i));
+    if (c === '>' || c === '<') { i = afterEvent(i); continue; }
     if (c === '^' || c === '_' || c === '=') {
       while (text[i] === c) i++;
       continue;
@@ -211,27 +301,24 @@ function scanBar(text: string, unit: number): BarScan {
       while (text[i] === ',' || text[i] === "'") i++;
       const len = readLength(text, i);
       if (!len) return bad(text.slice(i - 1));
-      duration += len.mult * unitNow;
-      notes++; sounds++;
-      i = len.next;
-      while (text[i] && /[.~]/.test(text[i])) i++;
-      if (text[i] === '-') i++;
+      timed(len.mult, true);
+      i = afterEvent(len.next);
       continue;
     }
     if (c === 'z' || c === 'x') {
       i++;
       const len = readLength(text, i);
       if (!len) return bad(c);
-      duration += len.mult * unitNow;
-      sounds++;
-      i = len.next;
+      timed(len.mult, false);
+      i = afterEvent(len.next);
       continue;
     }
     if (c === 'y') { i++; continue; }
+    if (c === '.' || c === '~') { i++; continue; }
     if (/[|:\][0-9]/.test(c)) { i++; continue; }
     return bad(text.slice(i));
   }
-  return { duration, notes, sounds, meter, nextMeter, nextUnit };
+  return { duration, notes, events, meter, nextMeter, nextUnit };
 }
 
 function voiceOf(line: string): { id: string; name: string } {
@@ -330,11 +417,12 @@ export function auditAbcMeasures(abc: string): MeasureAuditResult {
     const base = {
       bar, voice, meter, expected, actual,
       missing: expected - actual, hasNotes: scan.notes > 0,
+      notes: scan.notes, events: scan.events, barText: text,
     };
     const tolerance = 1e-9;
     if (scan.token !== undefined) {
       issues.push({ ...base, kind: 'unreadable', token: scan.token });
-    } else if (scan.notes === 0 && scan.sounds === 0) {
+    } else if (scan.events === 0) {
       issues.push({ ...base, kind: 'empty' });
     } else if (actual > expected + tolerance) {
       issues.push({ ...base, kind: 'long' });
@@ -463,17 +551,22 @@ export function formatBeats(beats: number): string {
 
 /** One issue as a deterministic English sentence (used in SVG tooltips). */
 export function measureIssueText(issue: MeasureIssue): string {
-  const beats = formatBeats(beatCount(issue.missing, issue.meter));
+  const missing = formatBeats(beatCount(issue.missing, issue.meter));
+  const actual = formatBeats(beatCount(issue.actual, issue.meter));
+  const expected = formatBeats(beatCount(issue.expected, issue.meter));
+  const plural = (beats: string) => `beat${beats === '1' ? '' : 's'}`;
   const where = `${issue.voice ? `${issue.voice} ` : ''}bar ${issue.bar}`;
   switch (issue.kind) {
     case 'short':
-      return `${where} (${issue.meter}): missing ${beats} beat${beats === '1' ? '' : 's'} of timing`
-        + (issue.gapBeat !== undefined ? ` after beat ${formatBeats(issue.gapBeat - 1)}` : '');
+      return `${where} (${issue.meter}): missing ${missing} ${plural(missing)} of timing`
+        + (issue.gapBeat !== undefined ? ` after beat ${formatBeats(issue.gapBeat - 1)}` : '')
+        + ` — wrote ${actual} of ${expected} beats`;
     case 'long':
-      return `${where} (${issue.meter}): over by ${beats} beat${beats === '1' ? '' : 's'} of timing`;
+      return `${where} (${issue.meter}): over by ${missing} ${plural(missing)} of timing`
+        + ` — wrote ${actual} of ${expected} beats`;
     case 'empty':
-      return `${where} (${issue.meter}): no notes — the bar has no note or rest length`;
+      return `${where} (${issue.meter}): no notes — the bar has no note or rest length (0 of ${expected} beats)`;
     case 'unreadable':
-      return `${where} (${issue.meter}): cannot check "${issue.token ?? ''}"`;
+      return `${where} (${issue.meter}): cannot check "${issue.token ?? ''}" — expected ${expected} ${plural(expected)}`;
   }
 }

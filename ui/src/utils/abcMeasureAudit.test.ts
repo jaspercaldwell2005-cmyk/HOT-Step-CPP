@@ -58,10 +58,43 @@ test('Z counts its bars and a chord-only bar is reported as no notes', () => {
 });
 
 test('notation the reader cannot model is unreadable, not short', () => {
-  const result = audit(score('V: Vocal', '(3C2D2E2 |'));
+  const result = audit(score('V: Vocal', 'C2 & E2 G2 |'));
   assert.equal(result.issues.length, 1);
   assert.equal(result.issues[0].kind, 'unreadable');
   assert.match(measureIssueText(result.issues[0]), /cannot check/);
+});
+
+test('tuplets are measured with abcjs\'s own ratios', () => {
+  const full = audit(score('V: Vocal', '(3C2D2E2 C2 D2 |', 'V: Ins', 'C8 |'));
+  assert.equal(full.ok, true);
+  const explicit = audit(score('V: Vocal', '(3:2:3C2D2E2 C2 D2 |', 'V: Ins', 'C8 |'));
+  assert.equal(explicit.ok, true);
+  const long = audit(score('V: Vocal', '(3C2D2E2 F2 G2 A2 |', 'V: Ins', 'C8 |'));
+  assert.equal(long.issues[0].kind, 'long');
+  assert.equal(long.issues[0].actual, 1.25);
+});
+
+test('broken rhythm moves length between neighbours without changing the bar', () => {
+  for (const body of ['C2>D2 E2 F2 |', 'C2>>D2 E2 F2 |', 'C2<D2 E2 F2 |', 'C2<<D2 E2 F2 |']) {
+    const result = audit(score('V: Vocal', body, 'V: Ins', 'C8 |'));
+    assert.equal(result.ok, true, body);
+  }
+});
+
+test('slurs are not tuplets and do not stop the reader', () => {
+  const result = audit(score('V: Vocal', '(C2 E2) G2 c2 |', 'V: Ins', 'C8 |'));
+  assert.equal(result.ok, true);
+});
+
+test('an issue carries the evidence used to flag it', () => {
+  const result = audit(score('V: Vocal', '"C"C2 E2 G2 |', 'V: Ins', 'C8 |'));
+  const [issue] = result.issues;
+  assert.equal(issue.barText, '"C"C2 E2 G2');
+  assert.equal(issue.notes, 3);
+  assert.equal(issue.events, 3);
+  assert.equal(issue.expected, 1);
+  assert.equal(issue.actual, 0.75);
+  assert.match(measureIssueText(issue), /wrote 3 of 4 beats/);
 });
 
 test('a voice that runs short of bars is reported once as alignment', () => {

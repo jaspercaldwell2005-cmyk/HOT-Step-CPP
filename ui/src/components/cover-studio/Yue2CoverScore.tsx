@@ -244,7 +244,7 @@ export const Yue2CoverScore: React.FC<Props> = p => {
     {/* Imported scores have no import row, so the toggle sits on the box. */}
     <div className="min-w-0">{(p.sourceMode !== 'audio' || p.readOnly) && p.abc.trim() && <div className="mb-1 flex justify-end">{viewToggle}</div>}{editor}</div>
     <div className={`${p.abc.trim() ? '' : 'hidden'} min-w-0 space-y-1`}>
-      <div className={`bg-white rounded-lg border border-zinc-200 overflow-y-auto ${p.wide ? '' : 'max-h-48'}`}
+      <div className={`bg-white rounded-lg border border-zinc-200 overflow-y-auto overflow-x-hidden ${p.wide ? '' : 'max-h-48'}`}
         style={{ height: boxHeight }}>
         <div ref={scoreRef} className="text-black p-2 [&_svg]:fill-current [&_.prep-selected]:fill-fuchsia-600 [&_.abcjs-highlight]:fill-amber-500" />
       </div>
