@@ -365,13 +365,19 @@ read is invisible: the component just renders its empty/default state. Examples:
 inline error row (`query.isError`) or add a shared read-error component. This
 is the largest UX gap in the current integration.
 
-**Status:** mostly closed — `components/shared/QueryError.tsx` plus inline
-`isError` handling landed across the consumers. About ten files still read no
-error state; most are sanctioned (side-effect-only subscriptions in
-`BackendToggle`/`MonitorBar`, sidecar text in `LyricsBar`/`SectionMarkers`/
-`WriteLyricsTab`, derived banners, and `SettingsPanel` through the env hook's
-own status line). `SourcePanel` and `PostProcessingDropdown` are candidates
-when next touched.
+**Status: closed.** `components/shared/QueryError.tsx` plus inline `isError`
+handling landed across the consumers. The last real cases were fixed on
+2026-10-27: the reference browser (`SourcePanel`), the Ollama model picker
+(`WriteLyricsTab`), and the PP-VAE / StableStep / adapter probes
+(`PostProcessingDropdown`, which no longer report a failed probe as
+"not installed"). Remaining files read no error state by design:
+
+| File | Why it shows nothing |
+|---|---|
+| `BackendToggle`, `MonitorBar` | Side-effect-only observers; the store projection owns the UI |
+| `LyricsBar`, `SectionMarkers` | Sidecar text; absent and failed both mean "no lyrics" |
+| `NoModelsBanner` | Derived banner; an error must not claim "no models" |
+| `SettingsPanel` | Health / worker status is ancillary; the env hook renders its own status line |
 
 #### 4.13 `compareStore` is a server-state island
 
@@ -487,11 +493,10 @@ Landed in the first fix pass:
 
 Still open, in rough priority order:
 
-1. **4.12** — reads with no failure state (largest UX gap).
-2. **4.13** — `compareStore` migration into a `queries/compare/` slice.
-3. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
+1. **4.13** — `compareStore` migration into a `queries/compare/` slice.
+2. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
    `yue2CaptionSource` row is closed).
-4. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
+3. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
    documenting intentional `staleTime: 0`, Devtools, and the disabled-observer
    note.
 

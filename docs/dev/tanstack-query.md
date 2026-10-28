@@ -179,14 +179,17 @@ when a second consumer appears.
 | Queue server projection | Executor owns its cadence; every read still goes through the cache |
 | `Sa3TrainCard` local status factory | F4#17 until SA3 moves into `training-data` |
 | `Yue2CoverDrift`, `useCoverArtGeneration` follow-up | Result is module state / a `cover-art-updated` event |
+| `BackendToggle`, `MonitorBar` observers | Side-effect-only: the store projection owns the visible state |
+| `LyricsBar`, `SectionMarkers` | Sidecar text; absent and failed both mean "no lyrics" |
+| `NoModelsBanner` | Derived banner; an error must not claim "no models" |
+| `SettingsPanel` health/worker reads | Ancillary status; the env hook renders its own line |
 
 ## Open work
 
-1. **Read failure states (§4.12).** `components/shared/QueryError.tsx` exists
-   and most consumers use it. About ten files still ignore `isError`; most are
-   sanctioned (side-effect-only subscriptions, sidecar text, derived banners,
-   the env hook's own status line). Close the remaining real cases as they are
-   touched.
+1. **Read failure states (§4.12) — closed.** `components/shared/QueryError.tsx`
+   plus inline `isError` handling covers every consumer. The last real gaps
+   (reference browser, Ollama model picker, PP-VAE/StableStep/adapter probes)
+   were fixed 2026-10-27; the six remaining observers are sanctioned below.
 2. **`compareStore` (§4.13).** Session list/detail/diff/analysis still live in
    a hand-rolled store instead of a `queries/compare/` slice. Largest remaining
    migration.
@@ -283,4 +286,5 @@ Expected UI suite: **452 pass, 0 fail, 1 skip**.
   factory) closed; P7 design recorded. Entity-pattern audit: `Worker` unified
   in `keys.ts`, `training-runs` key names centralised in `TR`, all factories
   return `queryOptions`, and the last five direct `localOptions` component
-  usages moved onto their area factories.
+  usages moved onto their area factories. Read-failure sweep closed §4.12
+  (reference browser, Ollama picker, PP-VAE/StableStep probes).
