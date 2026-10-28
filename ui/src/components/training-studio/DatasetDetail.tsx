@@ -9,6 +9,7 @@ import { JobProgress } from './JobProgress';
 import { LabelPanel } from './LabelPanel';
 import { SampleGrid } from './SampleGrid';
 import { useTrainingStream } from './useTrainingStream';
+import { useActiveTrainingJob } from '../../queries/training-runs/hooks';
 
 const STEPS: Array<{ id: 'label' | 'review' | 'build'; labelKey: string }> = [
   { id: 'label',  labelKey: 'trainingStudio.step.label' },
@@ -22,7 +23,7 @@ export const DatasetDetail: React.FC = () => {
   const step = useTrainingStore(s => s.step);
   const setStep = useTrainingStore(s => s.setStep);
   const closeDataset = useTrainingStore(s => s.closeDataset);
-  const activeJob = useTrainingStore(s => s.activeJob);
+  const activeJob = useActiveTrainingJob();
   const error = useTrainingStore(s => s.error);
 
   // Subscribed here, not inside JobProgress, so grid rows keep updating while

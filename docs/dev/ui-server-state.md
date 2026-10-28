@@ -404,7 +404,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `components/training-studio/TrainDitForm.tsx` | training-runs | trainingApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `components/training-studio/TrainLmForm.tsx` | training-runs | trainingApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `components/training-studio/TrainPanel.tsx` | training-runs | trainingApi, trainingRecipesApi | - | - | - | Query consumer; forms/commands/streams stay client-owned |
-| `components/training-studio/TrainingRunStats.tsx` | training-runs | - | - | - | 1 | Client/types/props or scoped store projection; no independent HTTP read |
+| `components/training-studio/TrainingRunStats.tsx` | training-runs | - | - | - | - | Active job read from the job cache via `useActiveTrainingJob`; no independent HTTP read |
 | `components/training-studio/TrainingWorkerBar.tsx` | training-data | trainingApi | - | - | 1 | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/WorkersPanel.tsx` | training-runs | trainingApi | - | - | 1 | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/Yue2AitkTrainCard.tsx` | training-runs | api, preferencesApi, sharedEventSource, trainingApi, trainingOperations, trainingPreparationApi | - | 1 | 5 | Query consumer; forms/commands/streams stay client-owned |
@@ -498,7 +498,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `queries/studios/workflows.ts` | studios | httpClient, workflowApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/training-data/queries.ts` | training-data | api, trainingApi, trainingPreparationApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/training-runs/events.ts` | training-runs | trainingApi | - | - | - | Query owner/policy; area contract applies |
-| `queries/training-runs/hooks.ts` | training-runs | trainingApi | - | - | - | Query owner/policy; area contract applies |
+| `queries/training-runs/hooks.ts` | training-runs | trainingApi | - | - | - | Query owner/policy; `useActiveTrainingJob` reads the job cache; area contract applies |
 | `queries/training-runs/queries.ts` | training-runs | api, trainingApi, trainingOperations, trainingPreparationApi, trainingRecipesApi, trainingReviewApi | - | - | - | Query owner/policy; area contract applies |
 | `stores/playbackStore.ts` | shell-queue | - | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `utils/mm3CaptionSource.ts` | shell-queue | - | - | - | - | Query-backed lireek read; client caption assembly |

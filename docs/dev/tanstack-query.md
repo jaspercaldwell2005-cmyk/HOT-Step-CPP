@@ -28,9 +28,9 @@ in the sanctioned table below.
 | **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | F3 | **Done.** Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. No component-owned network interval remains outside the health probe |
 | **P5** — env form | `useEnvSettingsForm` over `useQuery` | — | **Done.** Draft/seed/save lifecycle + draft-safety tests |
 | **P6** — composers and dedup | One factory per entity, duplicate factories removed | F4 | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
-| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Partly done.** 7.2 (queue projection) and 7.1(a) (job frames into the cache) shipped; 7.1(b–d) open (see §7) |
+| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Partly done.** 7.2 (queue projection), 7.1(a) (job frames into the cache) and 7.1(b) (cache is the read owner) shipped; 7.1(c–d) open (see §7) |
 
-**Verification (2026-10-27):** `tsc -b` clean; UI suite **458 pass / 0 fail /
+**Verification (2026-10-28):** `tsc -b` clean; UI suite **461 pass / 0 fail /
 1 skip**; whole-`src` ESLint **824 findings**, all pre-existing categories and
 zero project-guard hits; `npm run build` ✓; `node tools/docs/check-docs.mjs` →
 `ok`.
@@ -153,17 +153,17 @@ lifecycle or derived state is shared (`useRunJob`, `useJobSelection`,
 wrappers may sit next to their component; move them into `queries/<area>/`
 when a second consumer appears.
 
-## Inventory (non-test, 2026-10-27)
+## Inventory (non-test, 2026-10-28)
 
 | API | Count | Note |
 |---|---|---|
-| `useQuery` | 142 sites / 89 files | Declarative reads — the norm |
+| `useQuery` | 143 sites / 89 files | Declarative reads — the norm |
 | `useQueries` | 4 / 4 | Worker dispatch, worker list, curated profile, compare takes |
 | `useMutation` | 121 / 46 | Named writes carry a pending/error lifecycle |
 | `queryClient.query()` | 64 / 29 | One-shot reads; form/store/service seeding |
 | `queryClient.fetchQuery` | 0 | Renamed by P1; guarded |
 | `getQueryData` | 5 / 5 | SSE diff, optimistic restore, projections, peaks, compare rollback |
-| `setQueryData` / `setQueriesData` | 32 / 8 | SSE writes and deliberate in-place patches; `setQueriesData` spans cached lists |
+| `setQueryData` / `setQueriesData` | 35 / 8 | SSE writes and deliberate in-place patches; `setQueriesData` spans cached lists |
 | `useQueryClient` | 55 / 49 | Mostly to call `queryManager` |
 | `invalidateQueries` | 2 calls, 1 file | `queries/invalidation.ts` only |
 | `cancelQueries` / `removeQueries` | 19 / 7 | Allowed anywhere; they drop work, they do not refetch |
@@ -190,22 +190,22 @@ when a second consumer appears.
 
 ## Open work
 
-1. **P7.1 (b–d)** — the training job still has a second copy in the store.
+1. **P7.1 (c–d)** — the store still keeps its mirror copy of the training job.
 
 The earlier open items are closed: §4.12 read failure states on 2026-10-27, the
 `compareStore` migration (§4.13) on the same day, and the audio-queue projection
-timer (P7.2) on the same day. Stage (a) of P7.1 (job frames into the cache) has
-also shipped. Compare now has its own `queries/compare/` slice: read factories
+timer (P7.2) on the same day. Stages (a)–(b) of P7.1 (job frames into the cache,
+`useActiveTrainingJob`) have also shipped. Compare now has its own `queries/compare/` slice: read factories
 for sessions/detail/search/analysis/diff, mutation hooks for every command, and
 an optimistic score cache with a snapshot rollback. The hand-rolled store was
 deleted.
 
 ## P7 — structural design
 
-7.2 is closed. 7.1 remains: the store still keeps a second copy of
-`TrainingJobSummary`. Stages (b)–(d) touch an interactive job lifecycle, so they
-need staged diffs plus a manual smoke (start / cancel / terminal / engine park /
-reload).
+7.2 is closed. 7.1(a) and (b) are shipped: the job cache is the read owner and
+the store mirrors it. Stages (c)–(d) still touch an interactive job lifecycle,
+so they need staged diffs plus a manual smoke (start / cancel / terminal /
+engine park / reload).
 
 ### 7.1 Training SSE job frames
 
@@ -228,12 +228,22 @@ duplicate opener.
 **Shipped (2026-10-27): stage (a).** `bridgeRunEvents` merges `job`,
 `progress` and `status` frames into `trainingQueries.job` through the bridge's
 `update` path: progress implies running, and a frame never blanks a field it
-omits. The store still writes its own copy, so (b)–(d) remain.
+omits.
 
-**Watch:** 181 `activeJob` references; terminal frames race the stream close
-(`refreshAfterJob` already dedupes); MM3/YuE2 status routes share the frame
-vocabulary. **Exit:** one EventSource per job, no `TrainingJobSummary` in the
-store.
+**Shipped (2026-10-28): stage (b).** The store now mirrors every `activeJob`
+write into `trainingQueries.job` (job/progress/status frames, adopt, cancel,
+open, and the YuE2 preparation follow), using the shared merge rule in
+`queries/training-runs/jobFrame.ts`. `useActiveTrainingJob()` reads that cache
+entry through a disabled observer and falls back to the store copy only while
+the cache has not been seeded. All direct component reads of the full job moved
+onto the hook; remaining `activeJob` references are the store's own copy and
+fine-grained selectors (`activeJob?.kind`, `activeJob?.status`). Stages (c)–(d)
+remain.
+
+**Watch:** 173 `activeJob` references (30 in the store); terminal frames race
+the stream close (`refreshAfterJob` already dedupes); MM3/YuE2 status routes
+share the frame vocabulary. **Exit:** one EventSource per job, no
+`TrainingJobSummary` in the store.
 
 ### 7.2 Audio queue executor — done (2026-10-27)
 
@@ -269,7 +279,7 @@ grep -rn "queryKey:" src/components --include="*.tsx" | grep -v "Options()"     
 npx eslint src 2>&1 | grep -c "no-restricted-syntax"                                        # 0
 ```
 
-Expected UI suite: **458 pass, 0 fail, 1 skip**.
+Expected UI suite: **461 pass, 0 fail, 1 skip**.
 
 ## Phase history
 
@@ -291,4 +301,5 @@ Expected UI suite: **458 pass, 0 fail, 1 skip**.
   into `queries/compare/` (§4.13): read factories, mutation hooks, optimistic
   scoring with rollback, and the hand-rolled store deleted. P7.2 moved the
   server queue projection onto `useAudioQueueProjection()`; P7.1(a) made
-  `bridgeRunEvents` merge job frames into the job cache.
+  `bridgeRunEvents` merge job frames into the job cache, and P7.1(b) made that
+  cache the read owner through `useActiveTrainingJob()`.

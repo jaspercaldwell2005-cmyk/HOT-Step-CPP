@@ -21,6 +21,10 @@ const { useHeartmulaController } = await import('./useHeartmulaController');
 const { trainingQueries } = await import('../../queries/training-data/queries');
 const { TRAINING_TARGETS } = await import('./trainingTargets');
 const { heartmulaChips, heartmulaReadiness } = await import('./plugins/chips');
+const testClient = () => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+type Element = ReturnType<typeof createElement>;
+const renderWithClient = (element: Element) =>
+  renderToStaticMarkup(createElement(QueryClientProvider, { client: testClient() }, element));
 await i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {
   'trainingStudio.job.running': '{{done}}/{{total}} · {{phase}}',
   'trainingStudio.job.phaseEncoding': 'Encoding audio',
@@ -33,7 +37,7 @@ const status: HeartmulaStatusResponse = {
 };
 
 test('HeartMuLa recipe and start stay visible, with only optional settings folded', () => {
-  const { document } = parseHTML(renderToStaticMarkup(createElement(HeartmulaTrainCard, {
+  const { document } = parseHTML(renderWithClient(createElement(HeartmulaTrainCard, {
     status, slug: 'example', busy: false, trainStarted: false, onTrain() {}, onCheckpoint() {}, onCancel() {},
   })));
   const fields = [...document.querySelectorAll('input[type="number"]')];
@@ -54,7 +58,7 @@ test('HeartMuLa recipe and start stay visible, with only optional settings folde
 });
 
 test('HeartMuLa Train follows the preset and settings order and hides old run metrics', () => {
-  const render = (state: 'running' | 'done', updatedAt: number) => renderToStaticMarkup(createElement(HeartmulaTrainCard, {
+  const render = (state: 'running' | 'done', updatedAt: number) => renderWithClient(createElement(HeartmulaTrainCard, {
     status: { ...status, run: { run: 'example/one', state, updatedAt, step: 1, totalSteps: 480, loss: 2,
       lossHistory: [{ step: 1, loss: 2 }], msPerStep: 1000, peakVramMiB: 10000, checkpointStep: 1,
       adapterFile: null, error: null, startedAt: 0 } },
@@ -71,7 +75,7 @@ test('HeartMuLa Train follows the preset and settings order and hides old run me
   assert.doesNotMatch(old, /Peak VRAM|Checkpoint ladder/);
   assert.match(render('running', 0), /Peak VRAM/);
   // ETA on a live run: 479 steps at 1 s plus 5 previews (100..400 and the final) at the base take's 60 s.
-  const live = renderToStaticMarkup(createElement(HeartmulaTrainCard, {
+  const live = renderWithClient(createElement(HeartmulaTrainCard, {
     status: { ...status, run: { run: 'example/one', state: 'running', updatedAt: 0, step: 1, totalSteps: 480, loss: 2,
       lossHistory: [{ step: 1, loss: 2 }], msPerStep: 1000, peakVramMiB: 10000, checkpointStep: 1, adapterFile: null, error: null, startedAt: 0 } },
     previews: { run: 'example/one', settings: { ...HEARTMULA_PREVIEW_DEFAULTS, everySteps: 100 }, source: null,
@@ -92,7 +96,7 @@ test('HeartMuLa Prepare shows live per-track progress outside the settings fold 
         done: 2, total: 4, failed: 0, currentSampleId: 'track-three.wav', engineQueueDepth: 0 },
       jobLog: [{ ts: 1, level: 'info', message: 'Encoding track three' }], samplesById: {},
     });
-    const render = (datasetId: string) => renderToStaticMarkup(createElement(HeartmulaPrepareCard, {
+    const render = (datasetId: string) => renderWithClient(createElement(HeartmulaPrepareCard, {
       datasetId, status: status.prepare, busy: true, preparing: true, onPrepare() {},
     }));
     const html = render('one');
@@ -191,11 +195,11 @@ test('Perform all stages accepts stale preparation and a pasted resume path name
   let request: unknown;
   const run = 'example/2026-10-26_12-00-00';
   try {
-    await act(async () => root.render(createElement(HeartmulaTrainCard, {
+    await act(async () => root.render(createElement(QueryClientProvider, { client: testClient() }, createElement(HeartmulaTrainCard, {
       status: { ...status, prepare: { ...status.prepare, cacheValid: false, staleSamples: 1 },
         runs: [{ run, adapterName: 'example', state: 'failed', step: 1, recipe: HEARTMULA_RECIPE_DEFAULTS, resumable: true, published: null }] },
       slug: 'example', busy: false, trainStarted: false, onTrain() {}, onChain: value => { request = value; }, onCheckpoint() {}, onCancel() {},
-    })));
+    }))));
     const chain = [...document.querySelectorAll('button')].find(button => button.textContent === 'Perform all stages')!;
     assert.equal(chain.hasAttribute('disabled'), false);
     await act(async () => chain.click());
@@ -226,10 +230,10 @@ test('default updates follow accumulation, while an explicit update edit survive
     await act(async () => button.click());
   };
   try {
-    await act(async () => root.render(createElement(HeartmulaTrainCard, {
+    await act(async () => root.render(createElement(QueryClientProvider, { client: testClient() }, createElement(HeartmulaTrainCard, {
       status: { ...status, prepare: { ...status.prepare, preparedSamples: 5 } }, slug: 'example', busy: false,
       trainStarted: false, onTrain: value => { request = value; }, onCheckpoint() {}, onCancel() {},
-    })));
+    }))));
     assert.equal(numeric()[0].getAttribute('value'), '60');
     await start();
     assert.equal(request.recipe.steps, undefined);

@@ -42,6 +42,7 @@ import { Yue2SplitChart } from './Yue2SplitChart';
 import { reduceYue2Metric, type Yue2Point } from './yue2ChartData';
 import { captureJointOverrides, submitJointStart } from './yue2JointCommand';
 import { YUE2_JOINT_PRESETS_KEY, type Yue2JointPreset } from './yue2JointPresets';
+import { useActiveTrainingJob } from '../../queries/training-runs/hooks';
 
 const JOB_KEY = 'hs-yue2-aitk-job:';
 export const FORM_KEY = 'hs-yue2-aitk-form:';
@@ -802,7 +803,7 @@ export const Yue2AitkTrainCard: React.FC<{ datasetId: string; legacyManifest?: s
   // "Perform all stages" runs in the store and can outlive this card: after a
   // page remount it starts training through the old instance, so the job never
   // reaches this one. Adopt any joint job the store reports for this dataset.
-  const storeJob = useTrainingStore(s => s.activeJob);
+  const storeJob = useActiveTrainingJob();
   useEffect(() => {
     if (!storeJob || !isJointJob(storeJob, datasetId) || storeJob.id === job?.id) return;
     setJob(storeJob);

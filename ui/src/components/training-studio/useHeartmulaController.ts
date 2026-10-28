@@ -15,7 +15,7 @@ import { pollWhile } from '../../queries/contract';
 import { queryManager } from '../../queries/invalidation';
 import { renderHeartmulaPreview, startHeartmulaBatch, cancelYue2Batch, type TrainingJobSummary, type Yue2BatchSummary } from '../../services/trainingApi';
 import { trainingQueries } from '../../queries/training-data/queries';
-import { useRunJob } from '../../queries/training-runs/hooks';
+import { useRunJob, useActiveTrainingJob } from '../../queries/training-runs/hooks';
 import { useTrainingStore } from '../../stores/trainingStore';
 import type { HeartmulaTrainingView } from './plugins/heartmula';
 import type { TrainingRenderContext } from './trainingPluginTypes';
@@ -26,7 +26,7 @@ export function useHeartmulaController({ datasetId }: TrainingRenderContext): He
   const { t } = useTranslation();
   const client = useQueryClient();
   const worker = useTrainingStore(s => s.trainingWorker);
-  const job = useTrainingStore(s => s.activeJob);
+  const job = useActiveTrainingJob();
   const storeError = useTrainingStore(s => s.error);
   const startPrepare = useTrainingStore(s => s.startHeartmulaPrepare);
   const startTrain = useTrainingStore(s => s.startHeartmulaTrain);
@@ -41,9 +41,12 @@ export function useHeartmulaController({ datasetId }: TrainingRenderContext): He
   useEffect(() => {
     const state = useTrainingStore.getState();
     if (batchJob && state.trainingWorker === worker && state.selectedDatasetId === datasetId
-      && state.activeJob !== batchJob) useTrainingStore.setState({ activeJob: batchJob,
+      && state.activeJob !== batchJob) {
+      client.setQueryData(trainingQueries.job(worker, batchJob.id).queryKey, batchJob);
+      useTrainingStore.setState({ activeJob: batchJob,
         ...(state.activeJob?.id !== batchJob.id ? { jobLog: [] } : {}) });
-  }, [batchJob, datasetId, worker]);
+    }
+  }, [batchJob, datasetId, worker, client]);
   const [submitting, setSubmitting] = useState(false);
   const [chainError, setChainError] = useState<{ scope: string; message: string } | null>(null);
   const scope = `${worker ?? ''}:${datasetId}`;

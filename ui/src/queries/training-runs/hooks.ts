@@ -5,6 +5,7 @@ import { bridgeRunEvents } from './events';
 import { pollWhile } from '../contract';
 import { trainingQueries } from '../training-data/queries';
 import { activeJob, type Worker } from './queries';
+import { useTrainingStore } from '../../stores/trainingStore';
 import { queryManager } from '../invalidation';
 
 /** The stream is shared with the chart/log reducers. Replayed terminal
@@ -21,6 +22,24 @@ export function useRunJob(worker: Worker, id: string | null | undefined) {
   useRunEvents(id, worker);
   return useQuery({ ...trainingQueries.job(worker, id ?? ''), enabled: !!id,
     refetchInterval: pollWhile<api.TrainingJobSummary>(activeJob) });
+}
+
+/** The job the studio is following, read from the one Query cache entry.
+ *  Until stage (c) the store still mirrors it, so the store copy is the
+ *  fallback for a cache that has not been seeded yet (tests, direct
+ *  `setState`, a job the store adopted from a preparation poll). */
+export function useActiveTrainingJob(): api.TrainingJobSummary | null {
+  const worker = useTrainingStore(s => s.trainingWorker);
+  const stored = useTrainingStore(s => s.activeJob);
+  const id = stored?.id ?? null;
+  // A disabled observer: the store's mirror writes this entry, and no second
+  // fetch or stream opener is needed while stage (b) is in flight.
+  const cached = useQuery({
+    ...trainingQueries.job(worker, id ?? ''),
+    enabled: false,
+    staleTime: Infinity,
+  });
+  return cached.data ?? stored;
 }
 
 /** Only the selected id is client state. The job itself has one cache owner.

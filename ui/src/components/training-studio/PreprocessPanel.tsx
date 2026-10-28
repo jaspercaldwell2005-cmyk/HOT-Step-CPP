@@ -23,6 +23,7 @@ import {
 } from './PreprocessOptionsForm';
 import { PreprocessVariantCard } from './PreprocessVariantCard';
 import { useTrainingStream } from './useTrainingStream';
+import { useActiveTrainingJob } from '../../queries/training-runs/hooks';
 
 const CARD = 'rounded-xl border border-zinc-200 dark:border-white/5 bg-white dark:bg-suno-card p-4';
 
@@ -38,7 +39,7 @@ export const PreprocessPanel: React.FC = () => {
   const datasets = useTrainingStore(s => s.datasets);
   const detail = useTrainingStore(s => s.detail);
   const selectedDatasetId = useTrainingStore(s => s.selectedDatasetId);
-  const activeJob = useTrainingStore(s => s.activeJob);
+  const activeJob = useActiveTrainingJob();
   const error = useTrainingStore(s => s.error);
   const preprocessStatus = useTrainingStore(s => s.preprocessStatus);
   const preprocessLoading = useTrainingStore(s => s.preprocessLoading);

@@ -25,6 +25,7 @@ import { TrainingRunStats } from '../TrainingRunStats';
 import { TRAIN_LM_DEFAULTS, TrainLmForm, type TrainLmFormState } from '../TrainLmForm';
 import { useTrainingStream } from '../useTrainingStream';
 import { aceDitRecipeInput, aceLmRecipeInput, resolveTrainGate } from '../trainGates';
+import { useActiveTrainingJob } from '../../../queries/training-runs/hooks';
 
 const CARD = 'rounded-xl border border-zinc-200 dark:border-white/5 bg-white dark:bg-suno-card p-4';
 const STATUS_RELOAD_DEBOUNCE_MS = 400;
@@ -44,7 +45,7 @@ export const AceTrainingPage: React.FC = () => {
   const datasets = useTrainingStore(s => s.datasets);
   const detail = useTrainingStore(s => s.detail);
   const selectedDatasetId = useTrainingStore(s => s.selectedDatasetId);
-  const activeJob = useTrainingStore(s => s.activeJob);
+  const activeJob = useActiveTrainingJob();
   const storeError = useTrainingStore(s => s.error);
   const trainLmEpochs = useTrainingStore(s => s.trainLmEpochs);
   const trainLmLast = useTrainingStore(s => s.trainLmLast);

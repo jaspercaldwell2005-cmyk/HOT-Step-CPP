@@ -23,6 +23,7 @@ import { JobProgress } from './JobProgress';
 import { TrainingChart } from './TrainingChart';
 import { TrainingRunStats } from './TrainingRunStats';
 import { useTrainingStream } from './useTrainingStream';
+import { useActiveTrainingJob } from '../../queries/training-runs/hooks';
 
 const CARD = 'rounded-xl border border-zinc-200 dark:border-white/5 bg-white dark:bg-suno-card p-4';
 
@@ -46,7 +47,7 @@ export const PipelineStageProgress: React.FC<Props> = ({ item }) => {
   const active = runningStage(item);
   const jobId = active?.jobId || '';
 
-  const activeJob = useTrainingStore(s => s.activeJob);
+  const activeJob = useActiveTrainingJob();
   const trainLmEpochs = useTrainingStore(s => s.trainLmEpochs);
   const trainDitEpochs = useTrainingStore(s => s.trainDitEpochs);
   const trainStepSeries = useTrainingStore(s => s.trainStepSeries);
@@ -91,7 +92,15 @@ export const PipelineStageProgress: React.FC<Props> = ({ item }) => {
     return () => {
       cancelled = true;
       const cur = useTrainingStore.getState().activeJob;
-      if (cur && cur.id === jobId) useTrainingStore.setState({ activeJob: previous.current });
+      if (cur && cur.id === jobId) {
+        useTrainingStore.setState({ activeJob: previous.current });
+        if (previous.current) {
+          queryClient.setQueryData(
+            trainingQueries.job(useTrainingStore.getState().trainingWorker, previous.current.id).queryKey,
+            previous.current,
+          );
+        }
+      }
       previous.current = null;
     };
   }, [jobId]);

@@ -4,6 +4,7 @@ import { bridgeEvents, type BridgeOptions } from '../sseBridge';
 import { resourceKey, scopeOf, SHARED } from '../keys';
 import type { Worker } from './queries';
 import { trainingQueries } from '../training-data/queries';
+import { jobFrameUpdate } from './jobFrame';
 import { queryManager } from '../invalidation';
 
 export function invalidateRunReads(client: QueryClient, worker: Worker) {
@@ -14,35 +15,6 @@ export function invalidateRunReads(client: QueryClient, worker: Worker) {
 }
 
 const TERMINAL_STATUS = new Set(['done', 'failed', 'cancelled']);
-
-/** Merge one job-frame field set into the cached summary. A frame never
- *  blanks a field it does not carry; progress implies the job is running,
- *  matching the store rule this replaces. */
-function jobFrameUpdate(event: api.TrainingStreamEvent): ((old: unknown) => unknown) | undefined {
-  if (event.type === 'job') {
-    const frame = event.job;
-    return old => ({ ...(old as api.TrainingJobSummary), ...frame });
-  }
-  if (event.type === 'progress') {
-    return old => {
-      const job = old as api.TrainingJobSummary;
-      return {
-        ...job,
-        status: job.status === 'queued' ? 'running' : job.status,
-        done: event.done, total: event.total, failed: event.failed,
-        phase: event.phase, currentSampleId: event.currentSampleId,
-        engineQueueDepth: event.engineQueueDepth,
-      };
-    };
-  }
-  if (event.type === 'status') {
-    return old => {
-      const job = old as api.TrainingJobSummary;
-      return { ...job, status: event.status, error: event.error ?? job.error };
-    };
-  }
-  return undefined;
-}
 
 /** Metrics and logs keep their existing reducers and shared connection.
  * This bridge refreshes snapshots and updates the job cache; it cannot submit

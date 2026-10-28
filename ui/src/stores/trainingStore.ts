@@ -18,6 +18,7 @@ import { queryManager } from '../queries/invalidation';
 import { keysPlan, writeAndInvalidate } from '../queries/writes';
 import { cancelWorkerReads, TD, trainingQueries as tq, workerReads } from '../queries/training-data/queries';
 import { runQueries } from '../queries/training-runs/queries';
+import { nextJobSummary } from '../queries/training-runs/jobFrame';
 import { TRAINING_RECIPE_VERSION } from '../../../server/src/contracts/trainingRecipes';
 import { computeTrainingEta, type TrainingEta } from '../utils/trainingEta';
 import type {
@@ -622,7 +623,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       if (detail.activeJobId) {
         try {
           const job = await queryClient.query(tq.job(worker, detail.activeJobId));
-          if (!superseded()) set({ activeJob: job });
+          if (!superseded()) { set({ activeJob: job }); cacheJob(worker, job); }
         } catch { /* job may have just ended */ }
       } else if (isSwitch) {
         set({ activeJob: null });
@@ -1055,7 +1056,9 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       await writeAndInvalidate(queryClient, () => trainingApi.cancelJob(job.id, { worker }),
         keysPlan(resourceKey(TD.job, { worker }, job.id)));
       if (get().trainingWorker !== worker || get().activeJob?.id !== job.id) return;
-      set({ activeJob: { ...job, status: 'cancelled' } });
+      const cancelled = { ...job, status: 'cancelled' as const };
+      set({ activeJob: cancelled });
+      cacheJob(worker, cancelled);
       // That status change unmounts the EventSource, so the server's terminal
       // `status` frame may never arrive — run the authoritative refresh here.
       refreshAfterJob(get, job.id);
@@ -1139,6 +1142,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     switch (ev.type) {
       case 'job':
         set({ activeJob: ev.job });
+        cacheJob(get().trainingWorker, ev.job);
         // finishJob() emits this terminal 'job' frame BEFORE the 'status'
         // frame — and setting a terminal activeJob closes the EventSource
         // (useTrainingStream keys on jobActive), racing the status frame's
@@ -1154,24 +1158,16 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       case 'progress': {
         const job = get().activeJob;
         if (!job) break;
-        set({
-          activeJob: {
-            ...job,
-            // A job that is reporting per-item progress is running, whatever
-            // the last status we were told was. adoptJob reads the status once,
-            // at start, and a job that was still queued at that instant stays
-            // labelled "Queued..." for its whole life if the 'job' event that
-            // would have corrected it was missed — which is how a separation
-            // sat there saying Queued at 7 of 12 tracks.
-            status: job.status === 'queued' ? 'running' : job.status,
-            done: ev.done,
-            total: ev.total,
-            failed: ev.failed,
-            phase: ev.phase,
-            currentSampleId: ev.currentSampleId,
-            engineQueueDepth: ev.engineQueueDepth,
-          },
-        });
+        // A job that is reporting per-item progress is running, whatever the
+        // last status we were told was. adoptJob reads the status once, at
+        // start, and a job that was still queued at that instant stays
+        // labelled "Queued..." for its whole life if the 'job' event that
+        // would have corrected it was missed — which is how a separation sat
+        // there saying Queued at 7 of 12 tracks.
+        const next = nextJobSummary(ev, job);
+        if (!next) break;
+        set({ activeJob: next });
+        cacheJob(get().trainingWorker, next);
         break;
       }
 
@@ -1500,9 +1496,13 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
 
       case 'status': {
         const job = get().activeJob;
-        if (job) set({ activeJob: { ...job, status: ev.status, error: ev.error ?? job.error } });
-        // Authoritative refresh — exactly once per job, replay-safe.
-        if (job) refreshAfterJob(get, job.id);
+        const next = job ? nextJobSummary(ev, job) : undefined;
+        if (next) {
+          set({ activeJob: next });
+          cacheJob(get().trainingWorker, next);
+          // Authoritative refresh — exactly once per job, replay-safe.
+          refreshAfterJob(get, job!.id);
+        }
         break;
       }
     }
@@ -1511,6 +1511,13 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
 
 type SetState = (partial: Partial<TrainingState>) => void;
 type GetState = () => TrainingState;
+
+/** Mirror the active job into the Query cache. Stage (b) of the training
+ *  migration reads it through `useActiveTrainingJob`; stage (c) deletes the
+ *  store copy and this mirror. */
+function cacheJob(worker: string | null, job: TrainingJobSummary): void {
+  queryClient.setQueryData(tq.job(worker, job.id).queryKey, job);
+}
 
 /** Replace one sample row in the cached detail of the scope it belongs to. */
 function cacheSample(worker: string | null, datasetId: string, sample: TrainingSample): void {
@@ -1637,6 +1644,7 @@ async function adoptJob(set: SetState, get: GetState, worker: string | null, dat
   const job = await queryClient.query(tq.job(worker, jobId));
   if (!isCurrent(get, worker, datasetId)) return;
   set({ activeJob: job });
+  cacheJob(worker, job);
   if (job.status !== 'queued' && job.status !== 'running') refreshAfterJob(get, job.id);
 }
 
@@ -1703,6 +1711,7 @@ async function followYue2Preparation(
             : {}) });
       }
       set({ activeJob: job });
+      cacheJob(worker, job);
       if (job.status !== 'queued' && job.status !== 'running') refreshAfterJob(get, job.id);
     }
     if (pipeline.status === 'done') return true;

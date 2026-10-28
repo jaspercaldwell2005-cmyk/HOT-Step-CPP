@@ -49,21 +49,21 @@ helpers and (occasionally) hooks:
 | `training-runs/` | Jobs, review, scores, ladder, workers, status polls, run SSE |
 | `compare/` | Compare sessions, take analysis, diff trace, library search for the picker |
 
-### Actual usage (non-test, current — re-measured 2026-10-27)
+### Actual usage (non-test, current — re-measured 2026-10-28)
 
 | API | Calls / files | Notes |
 |---|---|---|
-| `useQuery` | **142** calls in **89** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
+| `useQuery` | **143** calls in **89** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
 | `useQueries` | **4** | `CuratedProfileModal`, `WorkersPanel`, `TrainingWorkerBar`, compare `SessionView`. |
 | `useMutation` | **121** calls in **46** files | Writes with a visible pending/error lifecycle. |
 | `queryClient.query(...)` | **64** | Imperative one-shot reads / form seeding / store and service reads. No `fetchQuery` remains (ESLint guard in `ui/eslint.config.js`). |
 | `useQueryClient()` | **55** calls in **49** files | Mostly to call `queryManager` invalidation helpers. |
-| `setQueryData` / `setQueriesData` | **32 / 8** | In-place patches and SSE updates; `setQueriesData` widens one patch across cached lists. |
+| `setQueryData` / `setQueriesData` | **35 / 8** | In-place patches and SSE updates; `setQueriesData` widens one patch across cached lists. |
 | `getQueryData` | **5** | `sseBridge` (diff detection), `SongBuilder` (optimistic restore), `global-models/projection`, `audio/peaksClient` (sync paint), compare score rollback. |
 | `invalidateQueries` | **2 calls, 1 file** | `queries/invalidation.ts` only. The ESLint guard makes any other call an error. |
 | `cancelQueries` / `removeQueries` | **19 / 7** | Allowed anywhere; they drop work, they do not refetch. |
 | `queryOptions(...)` | **111** calls in **18** files | Area slices plus the generic `localOptions`/`snapshotOptions` helpers. |
-| Query-layer tests | **15** files | Keys, contract, SSE bridge, each area, compare, training hooks. |
+| Query-layer tests | **16** files | Keys, contract, SSE bridge, each area, compare, training hooks. |
 
 ---
 
@@ -429,8 +429,10 @@ snapshot rollback on failure; the store was deleted. See the area README.
    owns non-query work (`useDownloadStream`, `useCaptionFile`). Generic and
    single-consumer wrappers may live in `hooks/` or next to their component as
    long as they delegate to a factory.
-6. **No Devtools.** `@tanstack/react-query-devtools` is not installed. Add it
-   as a dev-only dependency if cache/staleness debugging becomes routine.
+6. **No Devtools.** **Decided: leave it out.** The app already defaults to the
+   same QueryClient under HMR, and `queryClient.getQueryCache()` / the network
+   panel answer the usual staleness questions. Adding a dev-only dependency for
+   that is not worth the extra tree until debugging demands it.
 7. **`useQuery({ enabled: false })` as a cache slot.** **Resolved/recorded.**
    Intentional in `useDownloadStream.ts:16-19` (SSE fills it) and listed in
    [ui-server-state.md](../../../docs/dev/ui-server-state.md) with the other
@@ -502,11 +504,12 @@ Landed in the first fix pass:
 
 Still open, in rough priority order:
 
-1. **P7.1 (b–d)** — move `activeJob` reads onto `useActiveTrainingJob`, reduce
-   the store to `activeJobId` + worker, and delete `useTrainingStream`.
-2. **P2#2–#4, #6** — queryable-POST cardinality, the `TrainingWorkerBar`
-   fixed cadence decision, the remaining `staleTime: 0` note, and the Devtools
-   decision.
+1. **P7.1 (c–d)** — reduce the store to `activeJobId` + worker and delete
+   `useTrainingStream`; (b) already moved the full-job reads onto
+   `useActiveTrainingJob`.
+2. **P2#2, #4** — queryable-POST cardinality and the remaining `staleTime: 0`
+   note. (P2#3 moved `TrainingWorkerBar` onto `pollWhile`; P2#6 decided against
+   Devtools.)
 
 The usage counts in section 1 were re-measured after this pass; section 8 lists
 the commands used.
@@ -577,7 +580,7 @@ Validation for this pass: `npx tsc -b` clean; UI suite **450 pass / 0 fail /
 |---|---|
 | **P5** | `components/settings/useEnvSettingsForm.ts` observes `envOptions()` / `gpusOptions()`, seeds the draft only while clean, moves `original` on a dirty refetch, and saves through `queryManager.env.values`. `SettingsPanel` only renders values/handlers. `useEnvSettingsForm.test.ts` covers seed, dirty refetch, diff-only save, failed save and a failed GPU read |
 | **P6** | `trainingQueries.yue2CaptionSource(by)` in `queries/training-data/queries.ts` replaces the util-local key/queryFn. `Yue2SourceTrack` is re-exported from the area type. F4#14–#17 stay documented sanctions |
-| **P7** | 7.2 shipped: `queries/shell-queue/projection.ts` owns the queue's dynamic cadence and the store's timer is gone. 7.1(a) shipped: `bridgeRunEvents` merges job frames into the job cache. 7.1(b–d) — `useActiveTrainingJob`, store reduction and one opener — are still open |
+| **P7** | 7.2 shipped: `queries/shell-queue/projection.ts` owns the queue's dynamic cadence and the store's timer is gone. 7.1(a) shipped: `bridgeRunEvents` merges job frames into the job cache. 7.1(b) shipped: `useActiveTrainingJob()` reads that cache and the store mirrors every write. 7.1(c–d) — store reduction and one opener — are still open |
 
 Final inventory for this pass: `useQuery` **137/86**, `queryClient.query()`
 **64/29**, `useMutation` **116/45**, `invalidateQueries` **2 calls in one file**,
@@ -609,7 +612,7 @@ are clean.
 
 ---
 
-## 12. P7.2 and P7.1(a) (2026-10-27)
+## 12. P7.2, P7.1(a) and P7.1(b) (2026-10-27/28)
 
 **P7.2 — audio queue.** `useAudioQueueProjection()` (in
 `queries/shell-queue/projection.ts`, mounted once in `App.tsx`) subscribes to
@@ -622,8 +625,14 @@ same read+apply path with `startProjectionForTests`.
 
 **P7.1(a) — training job cache.** `bridgeRunEvents` now merges `job`,
 `progress` and `status` frames into `trainingQueries.job`. Progress implies
-running, and every merge preserves fields the frame omits. The store still
-writes its own `activeJob`, so 7.1(b–d) remain open.
+running, and every merge preserves fields the frame omits.
 
-Validation: `tsc -b` clean, UI suite **458 pass / 0 fail / 1 skip**, docs check
+**P7.1(b) — cache is the read owner (2026-10-28).** The store mirrors every
+`activeJob` write into the same cache entry, using the shared merge rule in
+`queries/training-runs/jobFrame.ts`. `useActiveTrainingJob()` reads it through a
+disabled observer, with the store copy as the transition fallback. Every direct
+component read of the full job moved onto the hook; fine-grained selectors and
+the store's own copy remain for (c).
+
+Validation: `tsc -b` clean, UI suite **461 pass / 0 fail / 1 skip**, docs check
 ok.

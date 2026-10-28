@@ -8,6 +8,7 @@ import { useTrainingStream } from './useTrainingStream';
 import { getTrainingPlugin } from './trainingPlugins';
 import { resolveTrainGate } from './trainGates';
 import type { TrainingTargetId, TrainingSection } from './trainingPluginTypes';
+import { useActiveTrainingJob } from '../../queries/training-runs/hooks';
 
 const CARD = 'rounded-xl border border-zinc-200 dark:border-white/5 bg-white dark:bg-suno-card p-4';
 
@@ -18,7 +19,7 @@ export const TrainPanel: React.FC<{ target: TrainingTargetId; section?: Training
   const datasets = useTrainingStore(s => s.datasets);
   const detail = useTrainingStore(s => s.detail);
   const trainingWorker = useTrainingStore(s => s.trainingWorker);
-  const activeJob = useTrainingStore(s => s.activeJob);
+  const activeJob = useActiveTrainingJob();
   const selectedDatasetId = useTrainingStore(s => s.selectedDatasetId);
   const openDataset = useTrainingStore(s => s.openDataset);
   const setPhase = useTrainingStore(s => s.setPhase);
