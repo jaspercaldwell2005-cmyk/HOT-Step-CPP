@@ -15,16 +15,20 @@ Companion documents (they own the detail this page does not repeat):
 
 ## Status
 
-| Phase | Scope | Status |
-|---|---|---|
-| **P1** — deprecation sweep | `fetchQuery` → `queryClient.query()`; ESLint guard | **Done.** Zero non-test `fetchQuery` |
-| **P2** — transport + writes | One axios transport, one error notifier, `writeAndInvalidate` / `useUpload`, one invalidation owner | **Done.** SSE stays on fetch; `invalidateQueries` is ESLint-guarded |
-| **P3** — component mutations | `useMutation` at named write sites; double-toast sweep | **Done.** Long-lived job/stream flows stay imperative by design |
-| **P3.1** — mutation consistency | Legacy studio CRUD handlers | **Done.** Lyric Studio CRUD, prompts, presets and song deletes converted |
-| **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | **Done.** No component-owned network interval remains outside the queue executor and health probe |
-| **P5** — env form | `useEnvSettingsForm` over `useQuery` | **Done.** Draft/seed/save lifecycle + draft-safety tests |
-| **P6** — composers and dedup | One factory per entity, duplicate factories removed | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
-| **P7** — structural | Training SSE second owner, audio-queue executor state | **Design recorded; code deferred** (see §7) |
+Each phase is the work that resolved one of the original audit findings (F1–F5,
+last column). F4 keeps its numbered anti-pattern ledger: #1–#13 closed, #14–#17
+in the sanctioned table below.
+
+| Workstream | Scope | Findings | Outcome |
+|---|---|---|---|
+| **P1** — deprecation sweep | `fetchQuery` → `queryClient.query()`; ESLint guard | F1 | **Done.** Zero non-test `fetchQuery` |
+| **P2** — transport + writes | One axios transport, one error notifier, `writeAndInvalidate` / `useUpload`, one invalidation owner | F2, F5 | **Done.** SSE stays on fetch; one interceptor with GET silent and status-mapped copy; `invalidateQueries` is ESLint-guarded |
+| **P3** — component mutations | `useMutation` at named write sites; double-toast sweep | F2 | **Done.** Component writes converted; store writes on `writeAndInvalidate`; `runCommand` → `trainingWritePlan`. Long-lived job/stream flows stay imperative by design |
+| **P3.1** — mutation consistency | Legacy studio CRUD handlers | F2 | **Done.** Lyric Studio CRUD, prompts, presets and song deletes converted |
+| **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | F3 | **Done.** Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. No component-owned network interval remains outside the queue executor and health probe |
+| **P5** — env form | `useEnvSettingsForm` over `useQuery` | — | **Done.** Draft/seed/save lifecycle + draft-safety tests |
+| **P6** — composers and dedup | One factory per entity, duplicate factories removed | F4 | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
+| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Design recorded; code deferred** (see §7) |
 
 **Verification (2026-10-27):** `tsc -b` clean; UI suite **452 pass / 0 fail /
 1 skip**; whole-`src` ESLint **824 findings**, all pre-existing categories and
@@ -240,16 +244,6 @@ keeps submission scheduling, the engine-park rules and the 2.5 s
 **Watch:** browser→server owner migration, offline persistence, song-delivery
 deduplication, `_pollUntilDone`. **Exit:** no `setInterval` for server queue
 reads; one dynamic refetch policy.
-
-## Closed findings (F1–F5)
-
-| Finding | Resolution |
-|---|---|
-| **F1** — `fetchQuery` deprecated, 73 sites | Renamed to `queryClient.query()`; ESLint guard added |
-| **F2** — writes had no mutation lifecycle | Component writes converted; store writes on `writeAndInvalidate`; `runCommand` → `trainingWritePlan` |
-| **F3** — reads/timers bypassing the cache | Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. P7 rows remain |
-| **F4** — anti-pattern ledger | #1–#13 closed; #14–#17 sanctioned (table above) |
-| **F5** — no global HTTP error handling | Axios transport + one interceptor; GET silent; status-mapped i18n copy |
 
 ## Verification
 
