@@ -8,8 +8,6 @@ import { BuildPanel } from './BuildPanel';
 import { JobProgress } from './JobProgress';
 import { LabelPanel } from './LabelPanel';
 import { SampleGrid } from './SampleGrid';
-import { useTrainingStream } from './useTrainingStream';
-import { useActiveTrainingJob } from '../../queries/training-runs/hooks';
 
 const STEPS: Array<{ id: 'label' | 'review' | 'build'; labelKey: string }> = [
   { id: 'label',  labelKey: 'trainingStudio.step.label' },
@@ -23,12 +21,7 @@ export const DatasetDetail: React.FC = () => {
   const step = useTrainingStore(s => s.step);
   const setStep = useTrainingStore(s => s.setStep);
   const closeDataset = useTrainingStore(s => s.closeDataset);
-  const activeJob = useActiveTrainingJob();
   const error = useTrainingStore(s => s.error);
-
-  // Subscribed here, not inside JobProgress, so grid rows keep updating while
-  // the user is on the Review or Build step.
-  useTrainingStream(activeJob && (activeJob.status === 'queued' || activeJob.status === 'running') ? activeJob.id : null);
 
   if (!detail) return null;
 

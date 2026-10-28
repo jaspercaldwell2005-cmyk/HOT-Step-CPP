@@ -84,5 +84,5 @@ lists every training-data file and its disposition. Files with reads:
 | `SampleDrawer.tsx`, `useCaptionFile.ts` | query (caption files); edits are client state, saves are commands |
 | `SendToLyricStudio.tsx` | query (export preview); export is a command |
 | `sendAuditionToCustomGen.ts` | query (local dataset revision); draft creation is a command |
-| `PipelineStageProgress.tsx`, `useTrainingStream.ts` | shared SSE; job refresh through Query |
+| `PipelineStageProgress.tsx` | adopts the stage job into the studio's one projection; job refresh through Query |
 | `useHeartmulaController.ts`, `plugins/heartmula.tsx` | query (status, takes); prepare/train/batch are commands, the preview retry is a mutation |

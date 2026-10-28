@@ -28,7 +28,7 @@ in the sanctioned table below.
 | **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | F3 | **Done.** Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. No component-owned network interval remains outside the health probe |
 | **P5** — env form | `useEnvSettingsForm` over `useQuery` | — | **Done.** Draft/seed/save lifecycle + draft-safety tests |
 | **P6** — composers and dedup | One factory per entity, duplicate factories removed | F4 | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
-| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Partly done.** 7.2 (queue projection), 7.1(a) (job frames into the cache) and 7.1(b) (cache is the read owner) shipped; 7.1(c–d) open (see §7) |
+| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Done.** 7.2 (queue projection) and 7.1(a–d) (one job cache, one stream opener, store keeps only the selected id) shipped (see §7) |
 
 **Verification (2026-10-28):** `tsc -b` clean; UI suite **461 pass / 0 fail /
 1 skip**; whole-`src` ESLint **824 findings**, all pre-existing categories and
@@ -162,7 +162,7 @@ when a second consumer appears.
 | `useMutation` | 121 / 46 | Named writes carry a pending/error lifecycle |
 | `queryClient.query()` | 64 / 29 | One-shot reads; form/store/service seeding |
 | `queryClient.fetchQuery` | 0 | Renamed by P1; guarded |
-| `getQueryData` | 5 / 5 | SSE diff, optimistic restore, projections, peaks, compare rollback |
+| `getQueryData` | 6 / 6 | SSE diff, optimistic restore, projections, peaks, compare rollback |
 | `setQueryData` / `setQueriesData` | 35 / 8 | SSE writes and deliberate in-place patches; `setQueriesData` spans cached lists |
 | `useQueryClient` | 55 / 49 | Mostly to call `queryManager` |
 | `invalidateQueries` | 2 calls, 1 file | `queries/invalidation.ts` only |
@@ -190,60 +190,53 @@ when a second consumer appears.
 
 ## Open work
 
-1. **P7.1 (c–d)** — the store still keeps its mirror copy of the training job.
-
-The earlier open items are closed: §4.12 read failure states on 2026-10-27, the
-`compareStore` migration (§4.13) on the same day, and the audio-queue projection
-timer (P7.2) on the same day. Stages (a)–(b) of P7.1 (job frames into the cache,
-`useActiveTrainingJob`) have also shipped. Compare now has its own `queries/compare/` slice: read factories
-for sessions/detail/search/analysis/diff, mutation hooks for every command, and
-an optimistic score cache with a snapshot rollback. The hand-rolled store was
+None of the planned P-items remain. §4.12 read failure states closed on
+2026-10-27, the `compareStore` migration (§4.13) closed the same day, the
+audio-queue projection timer (P7.2) closed the same day, and P7.1(a–d) closed on
+2026-10-28. Compare has its own `queries/compare/` slice: read factories for
+sessions/detail/search/analysis/diff, mutation hooks for every command, and an
+optimistic score cache with a snapshot rollback. The hand-rolled store was
 deleted.
 
 ## P7 — structural design
 
-7.2 is closed. 7.1(a) and (b) are shipped: the job cache is the read owner and
-the store mirrors it. Stages (c)–(d) still touch an interactive job lifecycle,
-so they need staged diffs plus a manual smoke (start / cancel / terminal /
-engine park / reload).
+7.2 and 7.1 are closed. Query owns the training job; the store keeps only the
+selected id plus the sample/log/preview/metric reducers.
 
 ### 7.1 Training SSE job frames
 
-**Now:** `useTrainingStream` opens the job stream and writes `job`, `progress`
-and `status` frames into `trainingStore.activeJob`; `training-runs/events.ts`
-opens the same stream through `bridgeEvents` for invalidation, and `useRunJob`
-observes `trainingQueries.job`. Two readers, two copies.
+**Design:** Query owns the job. `bridgeRunEvents` is the only opener and
+applies `job`/`progress`/`status` frames with `setQueryData` (merge, never blank
+a field); the store keeps `activeJobId` and `trainingWorker`;
+`useActiveTrainingJob()` reads the selected id from that cache entry.
+`useTrainingJobProjection()` is mounted once in `TrainingStudio`; it owns the
+stream, the poll and the terminal refresh. Samples, logs, previews and metrics
+stay store-owned until they get their own slices.
 
-**Target:** Query owns the job. `bridgeRunEvents` becomes the only opener and
-applies frames with `setQueryData` (merge, never blank a field); the store
-keeps only `activeJobId` and `trainingWorker`; a `useActiveTrainingJob()` hook
-reads the selected id through `useRunJob`. Delete the job/progress/status
-branches and the second EventSource. Samples, logs, previews and metrics stay
-store-owned until they get their own slices.
-
-**Order:** (a) cache writes in `bridgeRunEvents`; (b) `useActiveTrainingJob`
-and read-heavy cards; (c) delete the store's job writes; (d) remove the
-duplicate opener.
+**Shipped order:** (a) cache writes in `bridgeRunEvents`; (b)
+`useActiveTrainingJob` and read-heavy cards; (c) delete the store's job copy; (d)
+remove the duplicate opener.
 
 **Shipped (2026-10-27): stage (a).** `bridgeRunEvents` merges `job`,
 `progress` and `status` frames into `trainingQueries.job` through the bridge's
 `update` path: progress implies running, and a frame never blanks a field it
 omits.
 
-**Shipped (2026-10-28): stage (b).** The store now mirrors every `activeJob`
-write into `trainingQueries.job` (job/progress/status frames, adopt, cancel,
-open, and the YuE2 preparation follow), using the shared merge rule in
-`queries/training-runs/jobFrame.ts`. `useActiveTrainingJob()` reads that cache
-entry through a disabled observer and falls back to the store copy only while
-the cache has not been seeded. All direct component reads of the full job moved
-onto the hook; remaining `activeJob` references are the store's own copy and
-fine-grained selectors (`activeJob?.kind`, `activeJob?.status`). Stages (c)–(d)
-remain.
+**Shipped (2026-10-28): stages (c) and (d).** `trainingStore` no longer holds a
+`TrainingJobSummary`; it stores `activeJobId` and reads the summary from the
+cache through `jobOf()` where a store action needs the job's kind. The
+`job`/`progress`/`status` branches of `applyStreamEvent` are gone — the bridge
+merges those frames into the cache. `useTrainingJobProjection()` (one mount in
+`TrainingStudio`) owns the stream, the poll and `jobTerminal()`; terminal frames
+and the stream-error probe both land in the cache, and `refreshedJobs` still
+dedupes replays. `useTrainingStream` and every duplicate `useRunEvents` call
+were deleted. The ETA/epoch selectors take the job kind from
+`useActiveTrainingJob()`.
 
-**Watch:** 173 `activeJob` references (30 in the store); terminal frames race
-the stream close (`refreshAfterJob` already dedupes); MM3/YuE2 status routes
-share the frame vocabulary. **Exit:** one EventSource per job, no
-`TrainingJobSummary` in the store.
+**Watch:** MM3/YuE2 status routes share the frame vocabulary; a job stream that
+404s after a server restart is synthesized as failed by the bridge's error
+probe. **Exit met:** one EventSource per selected job, no `TrainingJobSummary`
+in the store.
 
 ### 7.2 Audio queue executor — done (2026-10-27)
 
@@ -300,6 +293,8 @@ Expected UI suite: **461 pass, 0 fail, 1 skip**.
   (reference browser, Ollama picker, PP-VAE/StableStep probes). Compare moved
   into `queries/compare/` (§4.13): read factories, mutation hooks, optimistic
   scoring with rollback, and the hand-rolled store deleted. P7.2 moved the
-  server queue projection onto `useAudioQueueProjection()`; P7.1(a) made
-  `bridgeRunEvents` merge job frames into the job cache, and P7.1(b) made that
-  cache the read owner through `useActiveTrainingJob()`.
+  server queue projection onto `useAudioQueueProjection()`; P7.1(a–b) made
+  `bridgeRunEvents` merge job frames into the job cache and
+  `useActiveTrainingJob()` its read owner; P7.1(c–d) deleted the store's job
+  copy and the duplicate stream opener, leaving one projection in
+  `TrainingStudio`.

@@ -419,7 +419,6 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `components/training-studio/Yue2TrainStages.tsx` | training-runs | trainingPreparationApi | - | - | 1 | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/sendAuditionToCustomGen.ts` | training-data | trainingApi, trainingOperations | 1 | - | - | Query: local `training-data/dataset` revision read (R2); explicit draft command |
 | `components/training-studio/useMm3Status.ts` | training-runs | trainingApi | - | - | - | Query consumer; forms/commands/streams stay client-owned |
-| `components/training-studio/useTrainingStream.ts` | training-data | sharedEventSource, trainingApi | - | 1 | - | Shared SSE; scoped Query job refresh |
 | `components/training-studio/useYue2ArStatus.ts` | training-runs | trainingApi | - | - | - | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/useYue2Status.ts` | training-runs | trainingApi | - | - | - | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/yue2ChartData.ts` | training-data | trainingApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
@@ -498,7 +497,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `queries/studios/workflows.ts` | studios | httpClient, workflowApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/training-data/queries.ts` | training-data | api, trainingApi, trainingPreparationApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/training-runs/events.ts` | training-runs | trainingApi | - | - | - | Query owner/policy; area contract applies |
-| `queries/training-runs/hooks.ts` | training-runs | trainingApi | - | - | - | Query owner/policy; `useActiveTrainingJob` reads the job cache; area contract applies |
+| `queries/training-runs/hooks.ts` | training-runs | trainingApi | 1 | - | - | Query owner/policy; `useTrainingJobProjection` is the one stream opener and `useActiveTrainingJob` reads the job cache |
 | `queries/training-runs/queries.ts` | training-runs | api, trainingApi, trainingOperations, trainingPreparationApi, trainingRecipesApi, trainingReviewApi | - | - | - | Query owner/policy; area contract applies |
 | `stores/playbackStore.ts` | shell-queue | - | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `utils/mm3CaptionSource.ts` | shell-queue | - | - | - | - | Query-backed lireek read; client caption assembly |

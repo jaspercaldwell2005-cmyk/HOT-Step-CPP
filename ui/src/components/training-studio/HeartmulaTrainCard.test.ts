@@ -23,8 +23,8 @@ const { TRAINING_TARGETS } = await import('./trainingTargets');
 const { heartmulaChips, heartmulaReadiness } = await import('./plugins/chips');
 const testClient = () => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
 type Element = ReturnType<typeof createElement>;
-const renderWithClient = (element: Element) =>
-  renderToStaticMarkup(createElement(QueryClientProvider, { client: testClient() }, element));
+const renderWithClient = (element: Element, client = testClient()) =>
+  renderToStaticMarkup(createElement(QueryClientProvider, { client }, element));
 await i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {
   'trainingStudio.job.running': '{{done}}/{{total}} · {{phase}}',
   'trainingStudio.job.phaseEncoding': 'Encoding audio',
@@ -92,13 +92,17 @@ test('HeartMuLa Prepare shows live per-track progress outside the settings fold 
   const saved = { ...initial };
   try {
     Object.assign(initial, {
-      activeJob: { id: 'prepare', kind: 'heartmula-prepare', datasetId: 'one', status: 'running', phase: 'encoding',
-        done: 2, total: 4, failed: 0, currentSampleId: 'track-three.wav', engineQueueDepth: 0 },
+      activeJobId: 'prepare',
       jobLog: [{ ts: 1, level: 'info', message: 'Encoding track three' }], samplesById: {},
+    });
+    const client = testClient();
+    client.setQueryData(trainingQueries.job(null, 'prepare').queryKey, {
+      id: 'prepare', kind: 'heartmula-prepare', datasetId: 'one', status: 'running', phase: 'encoding',
+      done: 2, total: 4, failed: 0, currentSampleId: 'track-three.wav', engineQueueDepth: 0,
     });
     const render = (datasetId: string) => renderWithClient(createElement(HeartmulaPrepareCard, {
       datasetId, status: status.prepare, busy: true, preparing: true, onPrepare() {},
-    }));
+    }), client);
     const html = render('one');
     assert.match(html, /track-three.wav/);
     assert.match(html, /2 \/ 4/);
@@ -116,7 +120,7 @@ test('a rejected older-run preview retry stays visible after a successful list r
   const savedStore = useTrainingStore.getState();
   const { window, document } = parseHTML('<html><body><div id="root"></div></body></html>');
   Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
-  useTrainingStore.setState({ trainingWorker: null, activeJob: null, error: null });
+  useTrainingStore.setState({ trainingWorker: null, activeJobId: null, error: null });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const runs = ['older', 'latest'].map(run => ({ run, adapterName: `${run} run`, recipe: HEARTMULA_RECIPE_DEFAULTS,
     state: 'failed' as const, step: 20, resumable: true, published: null }));

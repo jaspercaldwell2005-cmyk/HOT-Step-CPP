@@ -59,7 +59,7 @@ helpers and (occasionally) hooks:
 | `queryClient.query(...)` | **64** | Imperative one-shot reads / form seeding / store and service reads. No `fetchQuery` remains (ESLint guard in `ui/eslint.config.js`). |
 | `useQueryClient()` | **55** calls in **49** files | Mostly to call `queryManager` invalidation helpers. |
 | `setQueryData` / `setQueriesData` | **35 / 8** | In-place patches and SSE updates; `setQueriesData` widens one patch across cached lists. |
-| `getQueryData` | **5** | `sseBridge` (diff detection), `SongBuilder` (optimistic restore), `global-models/projection`, `audio/peaksClient` (sync paint), compare score rollback. |
+| `getQueryData` | **6** | `sseBridge` (diff detection), `SongBuilder` (optimistic restore), `global-models/projection`, `audio/peaksClient` (sync paint), compare score rollback, `trainingStore` (job kind). |
 | `invalidateQueries` | **2 calls, 1 file** | `queries/invalidation.ts` only. The ESLint guard makes any other call an error. |
 | `cancelQueries` / `removeQueries` | **19 / 7** | Allowed anywhere; they drop work, they do not refetch. |
 | `queryOptions(...)` | **111** calls in **18** files | Area slices plus the generic `localOptions`/`snapshotOptions` helpers. |
@@ -504,10 +504,7 @@ Landed in the first fix pass:
 
 Still open, in rough priority order:
 
-1. **P7.1 (c–d)** — reduce the store to `activeJobId` + worker and delete
-   `useTrainingStream`; (b) already moved the full-job reads onto
-   `useActiveTrainingJob`.
-2. **P2#2, #4** — queryable-POST cardinality and the remaining `staleTime: 0`
+1. **P2#2, #4** — queryable-POST cardinality and the remaining `staleTime: 0`
    note. (P2#3 moved `TrainingWorkerBar` onto `pollWhile`; P2#6 decided against
    Devtools.)
 
@@ -580,7 +577,7 @@ Validation for this pass: `npx tsc -b` clean; UI suite **450 pass / 0 fail /
 |---|---|
 | **P5** | `components/settings/useEnvSettingsForm.ts` observes `envOptions()` / `gpusOptions()`, seeds the draft only while clean, moves `original` on a dirty refetch, and saves through `queryManager.env.values`. `SettingsPanel` only renders values/handlers. `useEnvSettingsForm.test.ts` covers seed, dirty refetch, diff-only save, failed save and a failed GPU read |
 | **P6** | `trainingQueries.yue2CaptionSource(by)` in `queries/training-data/queries.ts` replaces the util-local key/queryFn. `Yue2SourceTrack` is re-exported from the area type. F4#14–#17 stay documented sanctions |
-| **P7** | 7.2 shipped: `queries/shell-queue/projection.ts` owns the queue's dynamic cadence and the store's timer is gone. 7.1(a) shipped: `bridgeRunEvents` merges job frames into the job cache. 7.1(b) shipped: `useActiveTrainingJob()` reads that cache and the store mirrors every write. 7.1(c–d) — store reduction and one opener — are still open |
+| **P7** | **Done.** 7.2 shipped: `queries/shell-queue/projection.ts` owns the queue's dynamic cadence and the store's timer is gone. 7.1(a–d) shipped: `bridgeRunEvents` merges job frames into the job cache, `useActiveTrainingJob()` is its read owner, the store keeps only `activeJobId`, and `useTrainingJobProjection()` is the one stream/poll opener |
 
 Final inventory for this pass: `useQuery` **137/86**, `queryClient.query()`
 **64/29**, `useMutation` **116/45**, `invalidateQueries` **2 calls in one file**,
@@ -612,7 +609,7 @@ are clean.
 
 ---
 
-## 12. P7.2, P7.1(a) and P7.1(b) (2026-10-27/28)
+## 12. P7.2 and P7.1(a–d) (2026-10-27/28)
 
 **P7.2 — audio queue.** `useAudioQueueProjection()` (in
 `queries/shell-queue/projection.ts`, mounted once in `App.tsx`) subscribes to
@@ -627,12 +624,18 @@ same read+apply path with `startProjectionForTests`.
 `progress` and `status` frames into `trainingQueries.job`. Progress implies
 running, and every merge preserves fields the frame omits.
 
-**P7.1(b) — cache is the read owner (2026-10-28).** The store mirrors every
+**P7.1(b) — cache is the read owner (2026-10-28).** The store mirrored every
 `activeJob` write into the same cache entry, using the shared merge rule in
-`queries/training-runs/jobFrame.ts`. `useActiveTrainingJob()` reads it through a
-disabled observer, with the store copy as the transition fallback. Every direct
-component read of the full job moved onto the hook; fine-grained selectors and
-the store's own copy remain for (c).
+`queries/training-runs/jobFrame.ts`, and `useActiveTrainingJob()` read it
+through a disabled observer. Every direct component read of the full job moved
+onto the hook.
+
+**P7.1(c–d) — one owner (2026-10-28).** The store now holds only `activeJobId`;
+store actions read the summary from the cache (`jobOf`) when they need its kind.
+`applyStreamEvent` keeps only the sample/log/preview/metric reducers.
+`useTrainingJobProjection()` is mounted once in `TrainingStudio` and owns the
+stream, poll and terminal refresh; `useTrainingStream` and every duplicate
+`useRunEvents` call were deleted.
 
 Validation: `tsc -b` clean, UI suite **461 pass / 0 fail / 1 skip**, docs check
 ok.

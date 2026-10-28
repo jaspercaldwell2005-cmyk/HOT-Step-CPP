@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as api from '../../services/trainingApi';
-import { bridgeRunEvents } from './events';
+import { bridgeRunEvents, type RunBridgeOptions } from './events';
 import { pollWhile } from '../contract';
 import { trainingQueries } from '../training-data/queries';
 import { activeJob, type Worker } from './queries';
@@ -10,36 +10,53 @@ import { queryManager } from '../invalidation';
 
 /** The stream is shared with the chart/log reducers. Replayed terminal
  * frames invalidate once per job; they never start a command or audition. */
-export function useRunEvents(jobId: string | null | undefined, worker: Worker) {
+export function useRunEvents(jobId: string | null | undefined, worker: Worker,
+  options?: RunBridgeOptions) {
   const client = useQueryClient();
+  const projectStore = options?.projectStore === true;
   useEffect(() => {
     if (!jobId) return;
-    return bridgeRunEvents(client, jobId, worker);
-  }, [client, jobId, worker]);
+    return bridgeRunEvents(client, jobId, worker, undefined, { projectStore });
+  }, [client, jobId, worker, projectStore]);
 }
 
-export function useRunJob(worker: Worker, id: string | null | undefined) {
-  useRunEvents(id, worker);
+export function useRunJob(worker: Worker, id: string | null | undefined,
+  options?: RunBridgeOptions) {
+  useRunEvents(id, worker, options);
   return useQuery({ ...trainingQueries.job(worker, id ?? ''), enabled: !!id,
     refetchInterval: pollWhile<api.TrainingJobSummary>(activeJob) });
 }
 
-/** The job the studio is following, read from the one Query cache entry.
- *  Until stage (c) the store still mirrors it, so the store copy is the
- *  fallback for a cache that has not been seeded yet (tests, direct
- *  `setState`, a job the store adopted from a preparation poll). */
+/** The job the studio is following, read from the one Query cache entry. The
+ *  store keeps only the selected id; the projection below is the single
+ *  stream/poll owner that fills this entry. */
 export function useActiveTrainingJob(): api.TrainingJobSummary | null {
   const worker = useTrainingStore(s => s.trainingWorker);
-  const stored = useTrainingStore(s => s.activeJob);
-  const id = stored?.id ?? null;
-  // A disabled observer: the store's mirror writes this entry, and no second
-  // fetch or stream opener is needed while stage (b) is in flight.
+  const id = useTrainingStore(s => s.activeJobId);
+  // A disabled observer: the projection writes this entry, and every card
+  // reads it without opening a second stream or poll.
   const cached = useQuery({
     ...trainingQueries.job(worker, id ?? ''),
     enabled: false,
     staleTime: Infinity,
   });
-  return cached.data ?? stored;
+  return cached.data ?? null;
+}
+
+/** One mount, beside the studio shell. It opens the job stream, polls the
+ *  selected job and feeds the store's sample/log/preview/metric reducers.
+ *  Terminal status runs the authoritative post-job refresh once. */
+export function useTrainingJobProjection(): void {
+  const worker = useTrainingStore(s => s.trainingWorker);
+  const id = useTrainingStore(s => s.activeJobId);
+  const jobTerminal = useTrainingStore(s => s.jobTerminal);
+  const job = useRunJob(worker, id, { projectStore: true }).data;
+  const jobId = job?.id;
+  const status = job?.status;
+  useEffect(() => {
+    if (!jobId || !status || status === 'queued' || status === 'running') return;
+    jobTerminal(jobId);
+  }, [jobId, status, jobTerminal]);
 }
 
 /** Only the selected id is client state. The job itself has one cache owner.

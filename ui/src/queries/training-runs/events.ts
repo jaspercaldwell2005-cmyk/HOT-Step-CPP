@@ -5,6 +5,7 @@ import { resourceKey, scopeOf, SHARED } from '../keys';
 import type { Worker } from './queries';
 import { trainingQueries } from '../training-data/queries';
 import { jobFrameUpdate } from './jobFrame';
+import { useTrainingStore } from '../../stores/trainingStore';
 import { queryManager } from '../invalidation';
 
 export function invalidateRunReads(client: QueryClient, worker: Worker) {
@@ -15,16 +16,56 @@ export function invalidateRunReads(client: QueryClient, worker: Worker) {
 }
 
 const TERMINAL_STATUS = new Set(['done', 'failed', 'cancelled']);
+const terminal = (event: api.TrainingStreamEvent): boolean => {
+  const status = event.type === 'status' ? event.status
+    : event.type === 'job' ? event.job.status : undefined;
+  return status !== undefined && TERMINAL_STATUS.has(status);
+};
+
+export interface RunBridgeOptions {
+  /** Apply store-owned frames (samples, logs, previews, metrics) and probe a
+   *  dropped stream. Only the one active-job projection sets this: every
+   *  other bridge only updates invalidation state. */
+  projectStore?: boolean;
+}
 
 /** Metrics and logs keep their existing reducers and shared connection.
- * This bridge refreshes snapshots and updates the job cache; it cannot submit
- * a job or audition. */
+ * This bridge refreshes snapshots, updates the job cache and, for the active
+ * job projection, feeds the store's sample/log/preview/metric reducers. It
+ * cannot submit a job or audition. */
 export function bridgeRunEvents(client: QueryClient, jobId: string, worker: Worker,
-  subscribe?: BridgeOptions<api.TrainingStreamEvent>['subscribe']) {
+  subscribe?: BridgeOptions<api.TrainingStreamEvent>['subscribe'],
+  options: RunBridgeOptions = {}) {
   const jobKey = trainingQueries.job(worker, jobId).queryKey;
+  const projection = options.projectStore === true;
   return bridgeEvents<api.TrainingStreamEvent>(client, {
     url: api.jobStreamUrl(jobId, { worker }),
     subscribe,
+    onMessage: event => {
+      if (!projection) return;
+      const store = useTrainingStore.getState();
+      if (store.trainingWorker === worker && store.activeJobId === jobId) {
+        store.applyStreamEvent(event);
+      }
+    },
+    onError: () => {
+      if (!projection) return;
+      // EventSource auto-reconnects and the buffer replay makes that safe. But
+      // if the server restarted, the in-memory job is gone (the stream 404s
+      // forever) and no terminal event will ever arrive — the UI would show
+      // "running" and keep Start disabled indefinitely. Query once: a live job
+      // is a no-op; a terminal or vanished job lands its final status in the
+      // same cache the projection observes.
+      void client.query(trainingQueries.job(worker, jobId)).then(
+        job => { client.setQueryData(jobKey, job); },
+        () => {
+          client.setQueryData(jobKey, old => old
+            ? { ...(old as api.TrainingJobSummary), status: 'failed' as const,
+                error: 'Job lost — the server restarted' }
+            : old);
+        },
+      );
+    },
     reconnectInvalidate: [
       resourceKey(SHARED.preparation), resourceKey(SHARED.preparationJob),
       resourceKey('training-data/job', { worker }, jobId),
@@ -36,11 +77,11 @@ export function bridgeRunEvents(client: QueryClient, jobId: string, worker: Work
     map: event => {
       if (!event) return undefined;
       const update = jobFrameUpdate(event);
-      const terminal = event.type === 'status' && TERMINAL_STATUS.has(event.status);
-      if (!update && !terminal) return undefined;
+      const done = terminal(event);
+      if (!update && !done) return undefined;
       return {
         ...(update ? { update: [{ key: jobKey, apply: update }] } : {}),
-        ...(terminal ? { once: { id: `training-runs:${worker ?? 'local'}:${jobId}:terminal`,
+        ...(done ? { once: { id: `training-runs:${worker ?? 'local'}:${jobId}:terminal`,
           run: () => { void invalidateRunReads(client, worker); } } } : {}),
       };
     },

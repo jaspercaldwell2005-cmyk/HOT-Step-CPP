@@ -41,10 +41,8 @@ export function useHeartmulaController({ datasetId }: TrainingRenderContext): He
   useEffect(() => {
     const state = useTrainingStore.getState();
     if (batchJob && state.trainingWorker === worker && state.selectedDatasetId === datasetId
-      && state.activeJob !== batchJob) {
-      client.setQueryData(trainingQueries.job(worker, batchJob.id).queryKey, batchJob);
-      useTrainingStore.setState({ activeJob: batchJob,
-        ...(state.activeJob?.id !== batchJob.id ? { jobLog: [] } : {}) });
+      && state.activeJobId !== batchJob.id) {
+      useTrainingStore.setState({ activeJobId: batchJob.id, jobLog: [] });
     }
   }, [batchJob, datasetId, worker, client]);
   const [submitting, setSubmitting] = useState(false);

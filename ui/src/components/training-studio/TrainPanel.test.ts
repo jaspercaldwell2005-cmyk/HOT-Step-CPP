@@ -33,7 +33,7 @@ test('HeartMuLa Prepare and Train reach their cards independently of ACE capabil
   } as HeartmulaStatusResponse;
   client.setQueryData(trainingQueries.heartmulaStatus(null, 'ds-1', false).queryKey, status);
   // Match the existing shell tests: SSR reads Zustand's initial snapshot.
-  Object.assign(initial, { selectedDatasetId: 'ds-1', trainingWorker: null, activeJob: null, error: null });
+  Object.assign(initial, { selectedDatasetId: 'ds-1', trainingWorker: null, activeJobId: null, error: null });
   const render = (section: 'prepare' | 'train') => renderToStaticMarkup(createElement(QueryClientProvider, { client },
     createElement(TrainPanel, { target: 'heartmula', section })));
   try {

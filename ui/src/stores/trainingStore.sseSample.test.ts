@@ -20,30 +20,29 @@ test('a labelled sample from the job stream also lands in the cached dataset det
   queryClient.clear();
 });
 
-test('job and progress frames also mirror the active job into the query cache', () => {
+test('job frames belong to the projection, not the store reducer', () => {
   const job = {
     id: 'j1', datasetId: 'd1', kind: 'preprocess', status: 'queued',
     total: 4, done: 0, failed: 0, currentSampleId: null, phase: '',
     engineQueueDepth: 0, error: null, createdAt: 0, startedAt: null, finishedAt: null,
   };
   const key = tq.job(null, job.id).queryKey;
-  useTrainingStore.setState({ trainingWorker: null, activeJob: null });
+  useTrainingStore.setState({ trainingWorker: null, activeJobId: 'j1' });
   try {
     useTrainingStore.getState().applyStreamEvent({ type: 'job', job } as never);
-    assert.equal((queryClient.getQueryData(key) as { status: string }).status, 'queued');
-
     useTrainingStore.getState().applyStreamEvent({
       type: 'progress', done: 2, total: 4, failed: 0,
       phase: 'preprocess', currentSampleId: 's2', engineQueueDepth: 1,
     } as never);
-    const mirrored = queryClient.getQueryData(key) as Record<string, unknown>;
-    assert.equal(mirrored.status, 'running', 'progress implies running');
-    assert.equal(mirrored.done, 2);
-    assert.equal(mirrored.phase, 'preprocess');
-    assert.equal((useTrainingStore.getState().activeJob as { done: number }).done, 2,
-      'the store copy stays identical until stage (c)');
+    useTrainingStore.getState().applyStreamEvent({ type: 'status', status: 'done' } as never);
+    assert.equal(queryClient.getQueryData(key), undefined,
+      'the bridge, not the reducer, writes the job cache entry');
+    assert.equal(useTrainingStore.getState().activeJobId, 'j1',
+      'the store keeps only the selected id');
+    assert.equal('activeJob' in useTrainingStore.getState(), false,
+      'no second job summary exists in the store');
   } finally {
-    useTrainingStore.setState({ activeJob: null });
+    useTrainingStore.setState({ activeJobId: null });
     queryClient.clear();
   }
 });

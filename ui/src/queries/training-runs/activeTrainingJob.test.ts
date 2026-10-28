@@ -1,5 +1,5 @@
-// activeTrainingJob.test.ts — stage (b): components read the job from the one
-// Query cache entry, and the store's mirror is only a transition fallback.
+// activeTrainingJob.test.ts — stage (c): components read the job from the one
+// Query cache entry, and the store keeps only the selected id.
 
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
@@ -19,38 +19,38 @@ const Probe = () => createElement('span', null, useActiveTrainingJob()?.status ?
 
 // SSR reads Zustand's getInitialState snapshot, so seed that object the same
 // way the component tests do and restore it after each case.
-function withStoredJob(job: unknown, run: () => void) {
+function withSelectedJob(id: string | null, run: () => void) {
   const initial = useTrainingStore.getInitialState();
-  const saved = { activeJob: initial.activeJob, trainingWorker: initial.trainingWorker };
-  Object.assign(initial, { trainingWorker: null, activeJob: job });
+  const saved = { activeJobId: initial.activeJobId, trainingWorker: initial.trainingWorker };
+  Object.assign(initial, { trainingWorker: null, activeJobId: id });
   try { run(); } finally { Object.assign(initial, saved); }
 }
 
 afterEach(() => {
-  useTrainingStore.setState({ trainingWorker: null, activeJob: null });
+  useTrainingStore.setState({ trainingWorker: null, activeJobId: null });
 });
 
-test('the hook prefers the cache entry over the store mirror', () => {
+test('the hook reads the selected id from the cache entry', () => {
   const client = createQueryClient();
   client.setQueryData(trainingQueries.job(null, 'j1').queryKey, { id: 'j1', status: 'running' } as never);
   let html = '';
-  withStoredJob({ id: 'j1', status: 'queued' }, () => {
+  withSelectedJob('j1', () => {
     html = renderToStaticMarkup(
       createElement(QueryClientProvider, { client }, createElement(Probe)),
     );
   });
-  assert.match(html, /running/, 'cache is the read owner once it has the job');
+  assert.match(html, /running/, 'the cache is the only job summary');
   client.clear();
 });
 
-test('the hook falls back to the store while the cache has no entry', () => {
+test('no cache entry means no job, even with an id', () => {
   const client = createQueryClient();
   let html = '';
-  withStoredJob({ id: 'j2', status: 'queued' }, () => {
+  withSelectedJob('j2', () => {
     html = renderToStaticMarkup(
       createElement(QueryClientProvider, { client }, createElement(Probe)),
     );
   });
-  assert.match(html, /queued/, 'a freshly adopted job is readable before its frame lands');
+  assert.match(html, /none/, 'the store no longer falls back to a copy');
   client.clear();
 });

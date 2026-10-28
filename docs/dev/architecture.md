@@ -189,9 +189,10 @@ are client reads. `backendStore` capability/model fields and VST chain fields
 are Query compatibility projections; `fetchModels` routes through Query.
 Create's backend refusal, Cover/Lyric adapter defaults and queue parameter
 capture consume those projections without starting a second read owner.
-Training's PipelineStageProgress/useTrainingStream capture worker/selection and
-apply the scoped store projection; their job refresh enters Query. Stream
-metrics, preview buffers and pending sample edits remain reducers/client state.
+Training's PipelineStageProgress adopts the running stage into the studio's one
+job projection, which captures worker/selection; its job refresh enters Query.
+Stream metrics, preview buffers and pending sample edits remain
+reducers/client state.
 The preparation executor and run panels share local Query detail/job snapshots.
 
 ### Verification and remaining acceptance
@@ -674,7 +675,6 @@ migration. The historical test fake is retained here only to reconcile its row.
 | `components/training-studio/Yue2TrainStages.tsx` | training-runs | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/sendAuditionToCustomGen.ts` | training-data | Local Query dataset revision read; explicit draft command |
 | `components/training-studio/useMm3Status.ts` | training-runs | Query consumer; forms/commands/streams stay client-owned |
-| `components/training-studio/useTrainingStream.ts` | training-data | Shared SSE; scoped Query job refresh |
 | `components/training-studio/useYue2ArStatus.ts` | training-runs | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/useYue2Status.ts` | training-runs | Query consumer; forms/commands/streams stay client-owned |
 | `components/training-studio/yue2ChartData.ts` | training-data | Client/types/props or scoped store projection; no independent HTTP read |

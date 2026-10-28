@@ -1,6 +1,6 @@
 // JobProgress.tsx — live job progress bar, log tail and cancel
 //
-// Progress arrives over SSE (see useTrainingStream). Understand work sits
+// Progress arrives over the studio's job projection (SSE). Understand work sits
 // behind the engine's single FIFO GPU worker, so queue depth is surfaced
 // rather than pretending labeling is instant.
 

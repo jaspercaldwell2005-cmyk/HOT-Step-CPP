@@ -30,8 +30,8 @@ function useNow(active: boolean): number {
 export const TrainingRunStats: React.FC = () => {
   const { t } = useTranslation();
   const job = useActiveTrainingJob();
-  const eta = useTrainingStore(selectTrainingEta);
-  const epochs = useTrainingStore(selectTrainingEpochs);
+  const eta = useTrainingStore(s => selectTrainingEta(s, job?.kind));
+  const epochs = useTrainingStore(s => selectTrainingEpochs(s, job?.kind));
 
   const active = job?.status === 'queued' || job?.status === 'running';
   const now = useNow(!!active);
