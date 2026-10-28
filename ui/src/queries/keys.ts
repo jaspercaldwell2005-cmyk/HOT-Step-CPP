@@ -88,6 +88,8 @@ export interface KeyScope {
   worker?: string | null;
   backend?: string;
 }
+/** A training target captured in a key: a worker name, or null for this PC. */
+export type Worker = string | null;
 export type Filters = Record<string, unknown>;
 export type ServerKey = readonly ['hs', Resource, KeyScope, string | number | null, Filters];
 

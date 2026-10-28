@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { localOptions } from '../../queries/global-models/options';
+import { ppVaeOptions, stableStepAdaptersOptions, stableStepOptions } from '../../queries/global-models/options';
 import { usePluginRegistry } from '../../hooks/usePluginRegistry';
 import { useReferenceTracks } from '../../queries/global-models/hooks';
 // PostProcessingDropdown.tsx — Unified post-processing panel for the global bar
@@ -282,15 +282,13 @@ export const PostProcessingDropdown: React.FC = () => {
   // is a second model and a second forward over the whole track.
   const alignOk = !!capabilities?.features.forcedAlignment;
 
-  const ppVae = useQuery(localOptions<{ available: boolean }>('pp-vae', '/models/pp-vae'));
+  const ppVae = useQuery(ppVaeOptions());
   const ppVaeAvailable = !!ppVae.data?.available;
-  const stableStep = useQuery(localOptions<{
-    available: boolean; backends?: { gguf: boolean }; tokenizer: boolean; ggufWeights: boolean;
-  }>('stablestep', '/models/stablestep'));
+  const stableStep = useQuery(stableStepOptions());
   const stableStepAvailable = !!stableStep.data?.available;
   const stableStepBackends = { gguf: !!stableStep.data?.backends?.gguf };
   const stableStepParts = { tokenizer: stableStep.data?.tokenizer ?? true, ggufWeights: stableStep.data?.ggufWeights ?? true };
-  const sa3Adapters = useQuery(localOptions<{ adapters: Array<{ name: string; sizeMb: number }> }>('sa3-adapters', '/models/stablestep/adapters'));
+  const sa3Adapters = useQuery(stableStepAdaptersOptions());
   const stableStepAdapterList = sa3Adapters.data?.adapters ?? [];
   const ssAdapterState = (name: string) =>
     (gp.stableStepAdapters ?? []).find((a: any) => a.name === name);

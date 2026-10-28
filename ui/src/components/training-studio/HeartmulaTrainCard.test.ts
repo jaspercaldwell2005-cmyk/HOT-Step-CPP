@@ -17,7 +17,8 @@ const { HeartmulaTrainCard } = await import('./HeartmulaTrainCard');
 const { HeartmulaPrepareCard } = await import('./HeartmulaPrepareCard');
 const { useTrainingStore } = await import('../../stores/trainingStore');
 const { createHeartmulaPlugin } = await import('./plugins/heartmula');
-const { useHeartmulaController, heartmulaPreviewOptions } = await import('./useHeartmulaController');
+const { useHeartmulaController } = await import('./useHeartmulaController');
+const { trainingQueries } = await import('../../queries/training-data/queries');
 const { TRAINING_TARGETS } = await import('./trainingTargets');
 const { heartmulaChips, heartmulaReadiness } = await import('./plugins/chips');
 await i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {
@@ -168,7 +169,7 @@ test('a rejected older-run preview retry stays visible after a successful list r
     await click('older run');
     assert.match(document.body.textContent!, /Preview retry rejected/);
     failList = true;
-    await act(async () => { await client.invalidateQueries({ queryKey: heartmulaPreviewOptions(null, 'one', 'older', false).queryKey }); });
+    await act(async () => { await client.invalidateQueries({ queryKey: trainingQueries.heartmulaPreviews(null, 'one', 'older', false).queryKey }); });
     await until(() => document.body.textContent!.includes('Preview list unavailable'));
     assert.match(document.body.textContent!, /Preview retry rejected/);
     // the Train page lists the run's previews under the card, as YuE2's does

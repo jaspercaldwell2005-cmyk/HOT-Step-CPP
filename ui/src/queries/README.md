@@ -48,18 +48,20 @@ helpers and (occasionally) hooks:
 | `training-data/` | Datasets, samples, preparation, training reads |
 | `training-runs/` | Jobs, review, scores, ladder, workers, status polls, run SSE |
 
-### Actual usage (non-test, current)
+### Actual usage (non-test, current — re-measured 2026-10-27)
 
 | API | Calls / files | Notes |
 |---|---|---|
-| `useQuery` | **128** calls in **81** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
+| `useQuery` | **137** calls in **86** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
 | `useQueries` | **3** | `CuratedProfileModal`, `WorkersPanel`, `TrainingWorkerBar`. |
-| `useMutation` | **115** calls in **44** files | Writes with a visible pending/error lifecycle. |
-| `queryClient.query(...)` | **66** | Imperative one-shot reads / form seeding / store and service reads. No `fetchQuery` remains (ESLint guard in `ui/eslint.config.js`). |
-| `useQueryClient()` | **46** files | Mostly to call `queryManager` invalidation helpers. |
+| `useMutation` | **116** calls in **45** files | Writes with a visible pending/error lifecycle. |
+| `queryClient.query(...)` | **64** | Imperative one-shot reads / form seeding / store and service reads. No `fetchQuery` remains (ESLint guard in `ui/eslint.config.js`). |
+| `useQueryClient()` | **50** calls in **48** files | Mostly to call `queryManager` invalidation helpers. |
 | `setQueryData` | **19** | In-place patches and SSE updates. |
-| `invalidateQueries` | **1 call site** | `queries/invalidation.ts` only; other grep hits are comments. |
-| `queryOptions(...)` | **95** | Area slices plus the generic `localOptions`/`snapshotOptions` helpers. |
+| `getQueryData` | **4** | `sseBridge` (diff detection), `SongBuilder` (optimistic restore), `global-models/projection`, `audio/peaksClient` (sync paint). |
+| `invalidateQueries` | **2 calls, 1 file** | `queries/invalidation.ts` only. The ESLint guard makes any other call an error. |
+| `cancelQueries` / `removeQueries` | **18 / 6** | Allowed anywhere; they drop work, they do not refetch. |
+| `queryOptions(...)` | **105** | Area slices plus the generic `localOptions`/`snapshotOptions` helpers. |
 | Query-layer tests | **14** files | Keys, contract, SSE bridge, each area, training hooks. |
 
 ---
@@ -292,12 +294,15 @@ Each duplicate bypasses the factory’s `retry`, `staleTime` and invalidation
 contract. **Improvement:** call the owning factory; if a filter or endpoint
 differs, add it to the factory rather than forking the resource.
 
-**Status:** fixed for the first four rows — `RecordingsTab` uses
-`generationStatusOptions(id, { signal })`, `InstaGenPanel` uses `readSong`,
-`QueuePanel` uses `lmAdaptersOptions(folder)` (folder from the params store),
-and `SourceSelector` uses `studioRecentSongsOptions(source)`. The two services
-still rebuild progress keys because the factories would import those services
-back (cycle); `yue2CaptionSource` remains a deliberate one-shot helper.
+**Status:** fixed for the component rows and `yue2CaptionSource`.
+`RecordingsTab` uses `generationStatusOptions(id, { signal })`, `InstaGenPanel`
+uses `readSong`, `QueuePanel` uses `lmAdaptersOptions(folder)` (folder from the
+params store), `SourceSelector` uses `studioRecentSongsOptions(source)`, and
+`yue2CaptionSource` calls `trainingQueries.yue2CaptionSource(by)`: key, query
+function, stale policy and the server snapshot types live in
+`queries/training-data/queries.ts`, while the util keeps the inline error
+surface and its local cache. The two services still rebuild progress keys
+because the factories would import those services back (cycle).
 
 #### 4.10 `localOptions` used directly in components
 
@@ -328,6 +333,11 @@ declared `localOptions` inline (`SeedManagerDrawer`, `CoverArtDropdown`,
 types were replaced by the exported ones. `localOptions` remains a building
 block inside `global-models/options.ts`.
 
+**Re-audit (2026-10-27):** the remaining direct component calls
+(`VstChainDropdown`, `PostProcessingDropdown`, `Mm3LmAdapterDropdown`,
+`Sa3TrainCard`) moved onto the existing factories. `localOptions` is now
+referenced only inside `global-models/`.
+
 #### 4.11 Duplicate `adapterScanOptions`
 
 Defined identically in `queries/global-models/options.ts:11` and
@@ -355,7 +365,13 @@ read is invisible: the component just renders its empty/default state. Examples:
 inline error row (`query.isError`) or add a shared read-error component. This
 is the largest UX gap in the current integration.
 
-**Status:** still open — the largest remaining UX gap; tracked as §7 priority #1.
+**Status:** mostly closed — `components/shared/QueryError.tsx` plus inline
+`isError` handling landed across the consumers. About ten files still read no
+error state; most are sanctioned (side-effect-only subscriptions in
+`BackendToggle`/`MonitorBar`, sidecar text in `LyricsBar`/`SectionMarkers`/
+`WriteLyricsTab`, derived banners, and `SettingsPanel` through the env hook's
+own status line). `SourcePanel` and `PostProcessingDropdown` are candidates
+when next touched.
 
 #### 4.13 `compareStore` is a server-state island
 
@@ -434,7 +450,8 @@ is the largest remaining migration if the contract is meant to be app-wide.
    is mandatory.
 4. **Invalidation:** never call `invalidateQueries` outside
    `queries/invalidation.ts`. Add a `queryManager` group or event if none
-   exists.
+   exists. This is enforced: `ui/eslint.config.js` reports the call anywhere
+   else (test files exempt).
 5. **Polling:** network polling belongs to Query (`refetchInterval` /
    `pollWhile`) or to `waitForSnapshot`/`waitForQuery`. Do not add a
    `setInterval` that fetches. Use `pollWhile` when failures should back off;
@@ -472,8 +489,8 @@ Still open, in rough priority order:
 
 1. **4.12** — reads with no failure state (largest UX gap).
 2. **4.13** — `compareStore` migration into a `queries/compare/` slice.
-3. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys and
-   `yue2CaptionSource` (both noted in 4.9).
+3. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
+   `yue2CaptionSource` row is closed).
 4. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
    documenting intentional `staleTime: 0`, Devtools, and the disabled-observer
    note.
@@ -514,3 +531,44 @@ rg -n "queryFn:"              ui/src --glob '!*.test.*'
 
 The next audit should re-run these and diff the result against sections 4 and
 5, rather than treating this file as permanently true.
+
+---
+
+## 9. Re-audit (2026-10-27): P1–P4 against current `master`
+
+Ran the section 8 commands again and diffed them against sections 1, 4 and 5
+after the HeartMuLa feature landed. Findings and fixes:
+
+| Finding | Evidence | Resolution |
+|---|---|---|
+| `invalidateQueries` outside the one owner | 5 calls — 4 in `components/training-studio/useHeartmulaController.ts`, 1 in `components/training-studio/plugins/heartmula.tsx` | Routed through `queryManager.invalidate` with the factory key. An ESLint guard now reports the call anywhere outside `queries/invalidation.ts`, so the class cannot come back |
+| Key factories beside components | `heartmulaStatusOptions` / `heartmulaPreviewOptions` exported from `useHeartmulaController.ts` | Moved to `queries/training-data/queries.ts` as `trainingQueries.heartmulaStatus` / `heartmulaPreviews` (+ `TD` keys). The controller keeps the mutation and store projection, which the hook-placement table allows |
+| Hand-rolled command state | Preview retry tracked `rendering` + `previewCommandError` with setters over a bare promise | `useMutation` (`isPending`, `variables`, `error`). It is `silent` because the card renders the failure inline — the old code both toasted and rendered it |
+| Double-report on batch start | `startHeartmulaBatch` was non-silent while the panel rendered `chainError` | Passes `silent: true`; the inline line is the only notifier |
+| Doc drift — upload timeout | `tanstack-query.md` claimed `httpClient.upload` sets `xhr.timeout`; it has used a silence watchdog since `5634c380` | Doc corrected; the watchdog is the behaviour to keep (`xhr.timeout` caps the whole request and breaks slow imports) |
+| Inventory drift | `useQuery` 128/81 → 135/85; `useMutation` 115/44 → 116/45; `getQueryData` 1 → 4; `invalidateQueries` claimed a single call site | Section 1 re-measured |
+
+Checked and clean: JSON transport bypass, `toast.error` outside the
+interceptor, component-built query keys/`queryFn`, single-request writes
+without a mutation outside the sanctioned job/stream table, and network polling
+timers.
+
+Validation for this pass: `npx tsc -b` clean; UI suite **450 pass / 0 fail /
+1 skip**; whole-`src` ESLint **826 findings, none from `no-restricted-syntax`**.
+
+---
+
+## 10. P5–P7 closure (2026-10-27)
+
+| Phase | Outcome |
+|---|---|
+| **P5** | `components/settings/useEnvSettingsForm.ts` observes `envOptions()` / `gpusOptions()`, seeds the draft only while clean, moves `original` on a dirty refetch, and saves through `queryManager.env.values`. `SettingsPanel` only renders values/handlers. `useEnvSettingsForm.test.ts` covers seed, dirty refetch, diff-only save, failed save and a failed GPU read |
+| **P6** | `trainingQueries.yue2CaptionSource(by)` in `queries/training-data/queries.ts` replaces the util-local key/queryFn. `Yue2SourceTrack` is re-exported from the area type. F4#14–#17 stay documented sanctions |
+| **P7** | Owner design recorded in [tanstack-query.md](../../../docs/dev/tanstack-query.md): Query owns the training job resource (one stream opener, store keeps selection) and the audio-queue server projection (dynamic `refetchInterval`, store keeps executor intent). Code deferred to a staged pass with manual job-lifecycle smoke |
+
+Final inventory for this pass: `useQuery` **137/86**, `queryClient.query()`
+**64/29**, `useMutation` **116/45**, `invalidateQueries` **2 calls in one file**,
+0 guard-rule hits. Validation: `tsc -b` clean, UI suite **452 pass / 0 fail /
+1 skip**, `npm run build` ✓, ESLint **824 findings / 0 guard hits**.
+
+

@@ -32,6 +32,12 @@ export const queryManager = {
   songs: {
     views: (c: QueryClient) => invalidateKeys(c, SONG_VIEWS),
   },
+  /** The editable .env snapshot, after Settings saved a diff. The key is
+   *  named here (not imported from shell-queue) so this file stays the only
+   *  invalidation owner without taking an area dependency. */
+  env: {
+    values: (c: QueryClient) => invalidateKeys(c, [resourceKey('shell-queue/env')]),
+  },
   /** A track's lyric sidecars, after a crop or retranscription rewrote them. */
   sidecars: {
     all: (c: QueryClient) => invalidateKeys(c, [resourceKey(SHARED.lrc), resourceKey(SHARED.lyricsJson)]),

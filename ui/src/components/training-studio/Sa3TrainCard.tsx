@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { pollWhile } from '../../queries/contract';
-import { localOptions } from '../../queries/global-models/options';
+import { stableStepAdaptersOptions } from '../../queries/global-models/options';
 import { scopeOf, serverKey } from '../../queries/keys';
 import { manualRenderRequest, renderSa3PreviewCommand, sa3PreviewOptions } from '../../queries/sa3-previews/queries';
 import { generationStatusOptions } from '../../queries/shell-queue/queue';
@@ -136,8 +136,7 @@ export const Sa3TrainCard: React.FC<{ datasetId: string; slug: string }> = ({ da
     },
   });
   const previewSteps = [...new Set((previewsQuery.data?.previews ?? []).map(p => p.step))].sort((a, b) => a - b);
-  const adaptersQuery = useQuery({ ...localOptions<{ adapters: Array<{ name: string; sizeMb: number }> }>(
-    'sa3-adapters', '/models/stablestep/adapters'), enabled: worker === null });
+  const adaptersQuery = useQuery({ ...stableStepAdaptersOptions(), enabled: worker === null });
   const adapters = adaptersQuery.data?.adapters ?? [];
   const [pickedAdapter, setPickedAdapter] = useState('');
   const selectedAdapter = pickedAdapter || status?.runs.find(r => r.published && adapters.some(a => a.name === r.published))?.published || '';

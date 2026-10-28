@@ -186,7 +186,7 @@ the policy above; aborts never surface; a request can opt out with
 `ClientOptions.silent`. Multipart `upload()` stays on XHR for its progress
 events and `streamEvents()` stays on fetch, and both report failures through
 the same `handleFailure`. The filters and status messages are in
-[tanstack-query.md](tanstack-query.md#global-error-filtering-in-the-response-interceptor).
+[tanstack-query.md](tanstack-query.md#errors).
 
 Every read in `api.ts` takes a trailing `opts?: ReadOptions` (`{ signal }`).
 Positional callers are unchanged, songs are still normalized, and errors are
@@ -359,7 +359,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `components/player/TrimControls.tsx` | shell-queue | api | - | - | - | Query consumer; forms/commands/streams stay client-owned |
 | `components/repaint-studio/RepaintStudio.tsx` | studios | api, repaintLayerWorkflowApi, studioDraftMirror, workflowApi | 1 | - | - | Query consumer; forms/commands/streams stay client-owned |
 | `components/settings/DataFolderPanel.tsx` | shell-queue | dataFolderApi | 1 | - | - | Query consumer; forms/commands/streams stay client-owned |
-| `components/settings/SettingsPanel.tsx` | shell-queue | api, lireekApi, stemStudioApi | 2 | - | - | Query consumer; forms/commands/streams stay client-owned |
+| `components/settings/SettingsPanel.tsx` | shell-queue | api, lireekApi, stemStudioApi | 2 | - | - | Query consumer; env draft/save/restart lifecycle delegated to `useEnvSettingsForm` |
 | `components/shared/FileBrowserModal.tsx` | shell-queue | api | - | - | - | Query consumer; forms/commands/streams stay client-owned |
 | `components/shared/LatentImport.tsx` | shell-queue | - | 1 | - | - | Client/types/props or scoped store projection; no independent HTTP read |
 | `components/shared/PresetSyncNotices.tsx` | shell-queue | presetCollection | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
@@ -528,3 +528,5 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `services/sa3PreviewApi.ts` | training-runs | httpClient | - | - | - | Transport; area Query caller owns reads, commands/streams explicit |
 | `services/updatesApi.ts` | shell-queue | httpClient | - | - | - | Transport; area Query caller owns reads, commands/streams explicit |
 | `stores/compareStore.ts` | studios | compareApi | - | - | - | Open: session list, session, analysis and diff reads held in a hand-rolled store, not Query ([tanstack-query.md](tanstack-query.md) F3) |
+| `components/training-studio/useHeartmulaController.ts` | training-data | trainingApi | - | - | - | Query consumer (`training-data/heartmula-status`, `heartmula-previews`); prepare/train/batch are commands, the preview retry is a mutation |
+| `components/settings/useEnvSettingsForm.ts` | shell-queue | api | - | - | - | Query consumer (`shell-queue/env`, GPUs) and mutation owner (save/restart); draft seeded only while clean, `queryManager.env.values` invalidates |
