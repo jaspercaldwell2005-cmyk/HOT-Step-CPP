@@ -3,6 +3,7 @@ import * as api from '../../services/trainingApi';
 import { bridgeEvents, type BridgeOptions } from '../sseBridge';
 import { resourceKey, scopeOf, SHARED } from '../keys';
 import type { Worker } from './queries';
+import { trainingQueries } from '../training-data/queries';
 import { queryManager } from '../invalidation';
 
 export function invalidateRunReads(client: QueryClient, worker: Worker) {
@@ -12,10 +13,43 @@ export function invalidateRunReads(client: QueryClient, worker: Worker) {
     (scopeOf(q.queryKey)?.worker === undefined || scopeOf(q.queryKey)?.worker === worker) });
 }
 
+const TERMINAL_STATUS = new Set(['done', 'failed', 'cancelled']);
+
+/** Merge one job-frame field set into the cached summary. A frame never
+ *  blanks a field it does not carry; progress implies the job is running,
+ *  matching the store rule this replaces. */
+function jobFrameUpdate(event: api.TrainingStreamEvent): ((old: unknown) => unknown) | undefined {
+  if (event.type === 'job') {
+    const frame = event.job;
+    return old => ({ ...(old as api.TrainingJobSummary), ...frame });
+  }
+  if (event.type === 'progress') {
+    return old => {
+      const job = old as api.TrainingJobSummary;
+      return {
+        ...job,
+        status: job.status === 'queued' ? 'running' : job.status,
+        done: event.done, total: event.total, failed: event.failed,
+        phase: event.phase, currentSampleId: event.currentSampleId,
+        engineQueueDepth: event.engineQueueDepth,
+      };
+    };
+  }
+  if (event.type === 'status') {
+    return old => {
+      const job = old as api.TrainingJobSummary;
+      return { ...job, status: event.status, error: event.error ?? job.error };
+    };
+  }
+  return undefined;
+}
+
 /** Metrics and logs keep their existing reducers and shared connection.
- * This bridge only refreshes snapshots; it cannot submit a job or audition. */
+ * This bridge refreshes snapshots and updates the job cache; it cannot submit
+ * a job or audition. */
 export function bridgeRunEvents(client: QueryClient, jobId: string, worker: Worker,
   subscribe?: BridgeOptions<api.TrainingStreamEvent>['subscribe']) {
+  const jobKey = trainingQueries.job(worker, jobId).queryKey;
   return bridgeEvents<api.TrainingStreamEvent>(client, {
     url: api.jobStreamUrl(jobId, { worker }),
     subscribe,
@@ -27,8 +61,16 @@ export function bridgeRunEvents(client: QueryClient, jobId: string, worker: Work
       ...['joint-runs', 'mm3-runs', 'nar-runs', 'ar-runs', 'previews', 'review', 'ladder', 'scores', 'album']
         .map(name => resourceKey(`training-runs/${name}`)),
     ],
-    map: event => event?.type === 'status' && ['done', 'failed', 'cancelled'].includes(event.status)
-      ? { once: { id: `training-runs:${worker ?? 'local'}:${jobId}:terminal`,
-        run: () => { void invalidateRunReads(client, worker); } } } : undefined,
+    map: event => {
+      if (!event) return undefined;
+      const update = jobFrameUpdate(event);
+      const terminal = event.type === 'status' && TERMINAL_STATUS.has(event.status);
+      if (!update && !terminal) return undefined;
+      return {
+        ...(update ? { update: [{ key: jobKey, apply: update }] } : {}),
+        ...(terminal ? { once: { id: `training-runs:${worker ?? 'local'}:${jobId}:terminal`,
+          run: () => { void invalidateRunReads(client, worker); } } } : {}),
+      };
+    },
   });
 }

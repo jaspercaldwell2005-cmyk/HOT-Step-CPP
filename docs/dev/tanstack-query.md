@@ -25,12 +25,12 @@ in the sanctioned table below.
 | **P2** — transport + writes | One axios transport, one error notifier, `writeAndInvalidate` / `useUpload`, one invalidation owner | F2, F5 | **Done.** SSE stays on fetch; one interceptor with GET silent and status-mapped copy; `invalidateQueries` is ESLint-guarded |
 | **P3** — component mutations | `useMutation` at named write sites; double-toast sweep | F2 | **Done.** Component writes converted; store writes on `writeAndInvalidate`; `runCommand` → `trainingWritePlan`. Long-lived job/stream flows stay imperative by design |
 | **P3.1** — mutation consistency | Legacy studio CRUD handlers | F2 | **Done.** Lyric Studio CRUD, prompts, presets and song deletes converted |
-| **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | F3 | **Done.** Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. No component-owned network interval remains outside the queue executor and health probe |
+| **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | F3 | **Done.** Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. No component-owned network interval remains outside the health probe |
 | **P5** — env form | `useEnvSettingsForm` over `useQuery` | — | **Done.** Draft/seed/save lifecycle + draft-safety tests |
 | **P6** — composers and dedup | One factory per entity, duplicate factories removed | F4 | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
-| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Design recorded; code deferred** (see §7) |
+| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Partly done.** 7.2 (queue projection) and 7.1(a) (job frames into the cache) shipped; 7.1(b–d) open (see §7) |
 
-**Verification (2026-10-27):** `tsc -b` clean; UI suite **452 pass / 0 fail /
+**Verification (2026-10-27):** `tsc -b` clean; UI suite **458 pass / 0 fail /
 1 skip**; whole-`src` ESLint **824 findings**, all pre-existing categories and
 zero project-guard hits; `npm run build` ✓; `node tools/docs/check-docs.mjs` →
 `ok`.
@@ -157,7 +157,7 @@ when a second consumer appears.
 
 | API | Count | Note |
 |---|---|---|
-| `useQuery` | 141 sites / 88 files | Declarative reads — the norm |
+| `useQuery` | 142 sites / 89 files | Declarative reads — the norm |
 | `useQueries` | 4 / 4 | Worker dispatch, worker list, curated profile, compare takes |
 | `useMutation` | 121 / 46 | Named writes carry a pending/error lifecycle |
 | `queryClient.query()` | 64 / 29 | One-shot reads; form/store/service seeding |
@@ -181,7 +181,6 @@ when a second consumer appears.
 | `useDownloadStream` disabled observer | Deliberate SSE cache slot (F4#14) |
 | `waitForSnapshot` / `waitForQuery` | Services and stores cannot use hooks |
 | Fixed cadence (Directed Drift 2 s, VST GUI 1.5 s) | A dropped tick is replaced by the next one |
-| Queue server projection | Executor owns its cadence; every read still goes through the cache |
 | `Sa3TrainCard` local status factory | F4#17 until SA3 moves into `training-data` |
 | `Yue2CoverDrift`, `useCoverArtGeneration` follow-up | Result is module state / a `cover-art-updated` event |
 | `BackendToggle`, `MonitorBar` observers | Side-effect-only: the store projection owns the visible state |
@@ -191,20 +190,22 @@ when a second consumer appears.
 
 ## Open work
 
-1. **P7** — the two structural migrations below.
+1. **P7.1 (b–d)** — the training job still has a second copy in the store.
 
-The earlier open items are closed: §4.12 read failure states on 2026-10-27, and
-the `compareStore` migration (§4.13) on the same day. Compare now has its own
-`queries/compare/` slice: read factories for sessions/detail/search/analysis/
-diff, mutation hooks for every command, and an optimistic score cache with a
-snapshot rollback. The hand-rolled store was deleted.
+The earlier open items are closed: §4.12 read failure states on 2026-10-27, the
+`compareStore` migration (§4.13) on the same day, and the audio-queue projection
+timer (P7.2) on the same day. Stage (a) of P7.1 (job frames into the cache) has
+also shipped. Compare now has its own `queries/compare/` slice: read factories
+for sessions/detail/search/analysis/diff, mutation hooks for every command, and
+an optimistic score cache with a snapshot rollback. The hand-rolled store was
+deleted.
 
-## P7 — structural design (deferred)
+## P7 — structural design
 
-Both sites keep a second copy of state the Query cache also owns. They are not
-bugs today; they are the last structural drift. Implementing them touches
-interactive job lifecycles, so each needs staged diffs plus a manual smoke
-(start / cancel / terminal / engine park / reload).
+7.2 is closed. 7.1 remains: the store still keeps a second copy of
+`TrainingJobSummary`. Stages (b)–(d) touch an interactive job lifecycle, so they
+need staged diffs plus a manual smoke (start / cancel / terminal / engine park /
+reload).
 
 ### 7.1 Training SSE job frames
 
@@ -224,26 +225,31 @@ store-owned until they get their own slices.
 and read-heavy cards; (c) delete the store's job writes; (d) remove the
 duplicate opener.
 
+**Shipped (2026-10-27): stage (a).** `bridgeRunEvents` merges `job`,
+`progress` and `status` frames into `trainingQueries.job` through the bridge's
+`update` path: progress implies running, and a frame never blanks a field it
+omits. The store still writes its own copy, so (b)–(d) remain.
+
 **Watch:** 181 `activeJob` references; terminal frames race the stream close
 (`refreshAfterJob` already dedupes); MM3/YuE2 status routes share the frame
 vocabulary. **Exit:** one EventSource per job, no `TrainingJobSummary` in the
 store.
 
-### 7.2 Audio queue executor
+### 7.2 Audio queue executor — done (2026-10-27)
 
-**Now:** `stores/audioGenQueueStore.ts` runs its own projection timer, parks
-items when the engine is unavailable, and copies `readAudioQueue` results into
-`_state.items`. The reads already go through Query; the cadence is local.
+`queries/shell-queue/projection.ts` exports `useAudioQueueProjection()`,
+mounted once in `App.tsx`. It queries `audioQueueItemsOptions()` with a dynamic
+`refetchInterval`: `ACTIVE_POLL_MS` while the server snapshot or any local row
+is active, and the old seven-tick (~10.5 s) idle cadence otherwise. The store's
+`setInterval` and idle-tick counters are deleted; `applyServerItems()` is still
+the single reducer for completion effects, delivery dedupe, MM3 siblings and
+studio-only rows. Manual commands keep the immediate
+`refreshServerProjection()` path. Store tests tick that path through
+`startProjectionForTests` because they have no React tree.
 
-**Target:** `audioQueueItemsOptions()` gets a dynamic `refetchInterval`
-(`pollWhile(data => data.items.some(active), ACTIVE_POLL_MS)`), subscribed by
-`useAudioQueueProjection()`. The projection timer is deleted. The executor
-keeps submission scheduling, the engine-park rules and the 2.5 s
-`_pollUntilDone` job read, and receives projected rows through one reducer.
-
-**Watch:** browser→server owner migration, offline persistence, song-delivery
-deduplication, `_pollUntilDone`. **Exit:** no `setInterval` for server queue
-reads; one dynamic refetch policy.
+**Exit met:** no `setInterval` for server queue reads; one dynamic policy.
+The executor keeps submission scheduling, engine-park rules and the 2.5 s
+`_pollUntilDone` job read.
 
 ## Verification
 
@@ -283,4 +289,6 @@ Expected UI suite: **457 pass, 0 fail, 1 skip**.
   usages moved onto their area factories. Read-failure sweep closed §4.12
   (reference browser, Ollama picker, PP-VAE/StableStep probes). Compare moved
   into `queries/compare/` (§4.13): read factories, mutation hooks, optimistic
-  scoring with rollback, and the hand-rolled store deleted.
+  scoring with rollback, and the hand-rolled store deleted. P7.2 moved the
+  server queue projection onto `useAudioQueueProjection()`; P7.1(a) made
+  `bridgeRunEvents` merge job frames into the job cache.

@@ -40,11 +40,12 @@ These reads never retry; each loop already decides what a failure means.
 Submits, cancels, retries, dismissals and migration commands stay direct
 calls and run once.
 
-The server projection remains the only queue poller: every 1.5 seconds while
-any row waits or runs, about every 10 seconds when the queue is idle (to see
-work another tab queued). A local command refreshes at once. A refresh asked
-for while one is in flight runs again straight after it, so an enqueue that
-races the poll still appears at once.
+`useAudioQueueProjection()` (in `projection.ts`, mounted once in `App.tsx`)
+is the only queue poller: every 1.5 seconds while any row waits or runs, about
+every 10 seconds when the queue is idle (to see work another tab queued). A
+local command refreshes at once. A refresh asked for while one is in flight
+runs again straight after it, so an enqueue that races the poll still appears
+at once.
 
 A finished render's song is delivered to the library once per page. A
 path claims the delivery only after its song read succeeds, so a failed

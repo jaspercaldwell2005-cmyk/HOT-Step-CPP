@@ -25,6 +25,7 @@ import { SongList } from './components/library/SongList';
 import { StreamWaveform } from './components/player/StreamWaveform';
 import { mm3StreamEnsureTakes, useMm3StreamAudio } from './stores/mm3StreamStore';
 import { enqueueSimpleGen, useResumeQueue, useAudioGenQueueSelector, clearFinishedFromAudioQueue } from './stores/audioGenQueueStore';
+import { useAudioQueueProjection } from './queries/shell-queue/projection';
 import { NoModelsBanner } from './components/shared/NoModelsBanner';
 import { RestoredQueueBanner } from './components/shared/RestoredQueueBanner';
 import { AudioQueueMigrationBanner } from './components/shared/AudioQueueMigrationBanner';
@@ -610,6 +611,7 @@ const AppContent: React.FC = () => {
 
   // Shared audio generation queue — resume on mount, subscribe only to active count
   useResumeQueue(token || undefined);
+  useAudioQueueProjection(token || undefined);
   const activeJobCount = useAudioGenQueueSelector(s =>
     s.items.filter(i => i.status === 'pending' || i.status === 'loading-adapter' || i.status === 'generating').length
   );

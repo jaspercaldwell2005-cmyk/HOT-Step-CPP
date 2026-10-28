@@ -180,7 +180,7 @@ describe the audit, not the current code.
 | `services/sharedEventSource.ts` | Shared EventSource transport with subscription teardown |
 | `components/midi-studio/MidiPlayer.tsx` | Live-note EventSource and 200 ms note-buffer flush timer; terminal notes use Query |
 | `components/midi-studio/midiSynth.ts`, `components/training-studio/TrainingRunStats.tsx`, `utils/heapWatch.ts` | WebAudio scheduling, elapsed-time display and heap sampling intervals; no server reads |
-| `stores/audioGenQueueStore.ts` | Existing projection interval schedules Query reads, 1.5 s active and about 10 s idle. Serialized execution loops and one-second status reuse remain; no extra component poll owner |
+| `stores/audioGenQueueStore.ts` | Executor only: serialized execution loops and one-second status reuse. The server projection cadence lives in `queries/shell-queue/projection.ts` (1.5 s active, about 10 s idle) |
 | `hooks/usePolling.ts` | Removed, with no surviving network callers |
 
 Imperative `getState`/`getSnapshot` reads were also checked. Global-parameter

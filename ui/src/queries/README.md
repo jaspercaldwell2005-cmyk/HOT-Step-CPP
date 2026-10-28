@@ -53,7 +53,7 @@ helpers and (occasionally) hooks:
 
 | API | Calls / files | Notes |
 |---|---|---|
-| `useQuery` | **141** calls in **88** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
+| `useQuery` | **142** calls in **89** files | The established read mechanism. Most declare `{ ...factoryOptions(), enabled }` inline in components. |
 | `useQueries` | **4** | `CuratedProfileModal`, `WorkersPanel`, `TrainingWorkerBar`, compare `SessionView`. |
 | `useMutation` | **121** calls in **46** files | Writes with a visible pending/error lifecycle. |
 | `queryClient.query(...)` | **64** | Imperative one-shot reads / form seeding / store and service reads. No `fetchQuery` remains (ESLint guard in `ui/eslint.config.js`). |
@@ -76,7 +76,7 @@ helpers and (occasionally) hooks:
 | Invalidation ownership | **Good** | One `invalidateQueries` call site; `queryManager` groups + events. |
 | `useQuery` reads | **Mostly good** | Factory-first, auth-aware, `pollWhile` for jobs. Residual inline keys and imperative reads. |
 | `useMutation` writes | **Good** | Broad adoption; the audited missing invalidations (4.4) are fixed, and Compare sessions now write through mutations. |
-| Polling | **Good** | Network polling is Query-owned (`pollWhile`/`refetchInterval`) or goes through `waitFor*`; the only raw network intervals left are the sanctioned health probe and the queue projection's executor cadence. |
+| Polling | **Good** | Network polling is Query-owned (`pollWhile`/`refetchInterval`) or goes through `waitFor*`; the only raw network interval left is the sanctioned health probe. |
 | Error surfacing | **Good** | Transport owns toast notification; reads render `QueryError` or a sanctioned empty state (§4.12). |
 | SSE integration | **Good** | Coalesced invalidation, replay-safe `once`, scoped teardown. |
 | Non-React stores | **Good** | `writeAndInvalidate` used widely; every remaining store is client state (Compare was the last server-state island). |
@@ -199,7 +199,6 @@ sanctioned.
 | `App.tsx:396-419` | Raw `fetch('/api/songs/:id/extract-kick')`, then a `for (0..360)` loop of `setTimeout(5000)` + `queryClient.query({ ...songOptions(id), staleTime: 0 })`, errors swallowed |
 | `components/storm/DriftPanel.tsx:309-317` | `setInterval(poll, 2000)` while playing, results into `useState`, errors swallowed |
 | `stores/vstChainStore.ts:216-222` | Module-level `setInterval` polling `vstApi.openGuis()`, self-clearing |
-| `stores/audioGenQueueStore.ts:685-689` | Module-level `setInterval` driving the queue's server projection; reads go through Query and idle backoff, but cadence is local |
 | `App.tsx:161-173` | Health probe poll (sanctioned liveness transport) |
 
 The disco loop duplicates retry, timeout and cache policy by hand and never
@@ -217,8 +216,8 @@ completion. Move the VST GUI poll onto a `QueryObserver` with an
 completes; Directed Drift reads `stormDriftOptions()` with `refetchInterval`
 while playing; the VST store polls `openGuisOptions()` through a `QueryObserver`
 that unsubscribes when no editor remains. The `/api/health` probe stays
-sanctioned, and the queue projection keeps its executor cadence while every
-read still goes through Query (see 5).
+sanctioned. The queue's server projection now polls through
+`useAudioQueueProjection()` (P7.2).
 
 #### 4.6 Two divergent `waitForSnapshot` implementations
 
@@ -443,7 +442,6 @@ snapshot rollback on failure; the store was deleted. See the area README.
 | `useDownloadStream` disabled observer | Deliberate SSE cache slot. |
 | `waitForSnapshot` / `waitForQuery` (`QueryObserver` outside React) | Services and stores cannot use hooks; the observer reuses the same cache and polling policy. |
 | Fixed-cadence `refetchInterval` (Directed Drift 2 s, VST GUI 1.5 s) | A dropped tick is replaced by the next one, so `pollWhile`’s error backoff adds latency without value. |
-| Queue server projection (`audioGenQueueStore.ts`) | The executor owns its 1.5 s / idle-skip cadence, but every read still goes through the Query cache. |
 
 ---
 
@@ -498,7 +496,9 @@ Still open, in rough priority order:
 
 1. **4.9 remainder** — `stemStudioApi`/`supersepApi` progress keys (the
    `yue2CaptionSource` row is closed).
-2. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
+2. **P7.1 (b–d)** — move `activeJob` reads onto `useActiveTrainingJob`, reduce
+   the store to `activeJobId` + worker, and delete `useTrainingStream`.
+3. **P2#2–#4, #6–#7** — queryable-POST cardinality, fixed idle cadence,
    documenting intentional `staleTime: 0`, Devtools, and the disabled-observer
    note.
 
@@ -571,7 +571,7 @@ Validation for this pass: `npx tsc -b` clean; UI suite **450 pass / 0 fail /
 |---|---|
 | **P5** | `components/settings/useEnvSettingsForm.ts` observes `envOptions()` / `gpusOptions()`, seeds the draft only while clean, moves `original` on a dirty refetch, and saves through `queryManager.env.values`. `SettingsPanel` only renders values/handlers. `useEnvSettingsForm.test.ts` covers seed, dirty refetch, diff-only save, failed save and a failed GPU read |
 | **P6** | `trainingQueries.yue2CaptionSource(by)` in `queries/training-data/queries.ts` replaces the util-local key/queryFn. `Yue2SourceTrack` is re-exported from the area type. F4#14–#17 stay documented sanctions |
-| **P7** | Owner design recorded in [tanstack-query.md](../../../docs/dev/tanstack-query.md): Query owns the training job resource (one stream opener, store keeps selection) and the audio-queue server projection (dynamic `refetchInterval`, store keeps executor intent). Code deferred to a staged pass with manual job-lifecycle smoke |
+| **P7** | 7.2 shipped: `queries/shell-queue/projection.ts` owns the queue's dynamic cadence and the store's timer is gone. 7.1(a) shipped: `bridgeRunEvents` merges job frames into the job cache. 7.1(b–d) — `useActiveTrainingJob`, store reduction and one opener — are still open |
 
 Final inventory for this pass: `useQuery` **137/86**, `queryClient.query()`
 **64/29**, `useMutation` **116/45**, `invalidateQueries` **2 calls in one file**,
@@ -599,3 +599,25 @@ in `compare-studio` are the pre-existing `set-state-in-effect` and
 are clean.
 
 
+
+
+---
+
+## 12. P7.2 and P7.1(a) (2026-10-27)
+
+**P7.2 — audio queue.** `useAudioQueueProjection()` (in
+`queries/shell-queue/projection.ts`, mounted once in `App.tsx`) subscribes to
+`audioQueueItemsOptions()` with a dynamic `refetchInterval`: 1.5 s while the
+server snapshot or a local row is active, ~10.5 s when idle. The store's
+projection `setInterval` and idle-tick counters are deleted. The reducer,
+completion effects, delivery dedupe, MM3 siblings and manual-row retention are
+unchanged; manual commands keep an immediate refresh. Store tests drive the
+same read+apply path with `startProjectionForTests`.
+
+**P7.1(a) — training job cache.** `bridgeRunEvents` now merges `job`,
+`progress` and `status` frames into `trainingQueries.job`. Progress implies
+running, and every merge preserves fields the frame omits. The store still
+writes its own `activeJob`, so 7.1(b–d) remain open.
+
+Validation: `tsc -b` clean, UI suite **458 pass / 0 fail / 1 skip**, docs check
+ok.

@@ -299,7 +299,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 
 | File | Area | Services | fetch | SSE | Timers | Disposition |
 |---|---|---|---|---|---|---|
-| `App.tsx` | shell-queue | api, sharedEventSource | 7 | 1 | 2 | Query library; liveness transport, commands, log stream |
+| `App.tsx` | shell-queue | api, sharedEventSource | 7 | 1 | 2 | Query library; liveness transport, commands, log stream, queue projection observer |
 | `audio/peaksClient.ts` | shell-queue | - | 1 | - | - | Query: shared `peaks`; failures uncached, `forgetPeaks` removes the entry (R5) |
 | `components/assistant/AssistantPanel.tsx` | studios | assistantApi | - | - | - | Query consumer; forms/commands/streams stay client-owned |
 | `components/cover-studio/ArtistSettingsPanel.tsx` | cover-lyrics | lireekApi | - | - | - | Client/types/props or scoped store projection; no independent HTTP read |
@@ -463,7 +463,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `services/trainingReviewApi.ts` | training-runs | trainingApi, trainingOperations | - | - | - | Transport; area Query caller owns reads, commands/streams explicit |
 | `services/workflowApi.ts` | shell-queue | - | 2 | - | - | Transport; area Query caller owns reads, commands/streams explicit |
 | `services/yue2CoverApi.ts` | cover-lyrics | - | 1 | - | - | Query-backed reads; commands/working-copy reducers |
-| `stores/audioGenQueueStore.ts` | shell-queue | api, audioQueueApi, lireekApi, workflowApi | 1 | - | 1 | Query reads; client executor/scheduler and media transport |
+| `stores/audioGenQueueStore.ts` | shell-queue | api, audioQueueApi, lireekApi, workflowApi | 1 | - | - | Query reads and the queue-snapshot reducer; client executor/scheduler and media transport |
 | `stores/audioQueueStoreTestFake.ts` | shell-queue | preferencesTestFake | - | - | - | Test fake; excluded from production |
 | `stores/backendStore.ts` | global-models | - | 5 | - | - | Query exact-key projections and selection commands |
 | `stores/coverStemsStore.ts` | cover-lyrics | supersepApi | - | - | - | Query separation waiter; client execution/mixer |
@@ -488,6 +488,7 @@ had no row. Of the listed files only `hooks/usePolling.ts` no longer exists.
 | `queries/global-models/presets.ts` | global-models | preferencesApi, workflowApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/shell-queue/preferences.ts` | shell-queue | preferencesApi, workflowApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/shell-queue/queue.ts` | shell-queue | api, audioQueueApi, httpClient | - | - | - | Query owner/policy; area contract applies |
+| `queries/shell-queue/projection.ts` | shell-queue | - | - | - | - | Query owner: dynamic `refetchInterval` for the server audio queue; `applyServerItems` reconciles snapshots |
 | `queries/shell-queue/settings.ts` | shell-queue | api, dataFolderApi, stemStudioApi | - | - | - | Query owner/policy; area contract applies |
 | `queries/shell-queue/songs.ts` | shell-queue | api | - | - | - | Query owner/policy; area contract applies |
 | `queries/studios/lyrics.ts` | studios | httpClient | 1 | - | - | Query owner/policy; area contract applies |
