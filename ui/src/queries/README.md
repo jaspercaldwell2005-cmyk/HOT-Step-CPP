@@ -1,14 +1,14 @@
 # TanStack Query — layer map and remediation ledger
 
 Current state of the server-state layer in `ui/src/queries/` (`@tanstack/react-query`
-`^5.104.3`), re-measured **2026-10-28**. The original integration audit ran on
-2026-10-23; every finding from it is now fixed, accepted, or recorded as a
-sanctioned exception below.
+`^5.104.3`), re-measured **2026-10-28**.
 
-This file owns the layer map, conventions and exception list. It complements:
+This file owns the layer map, conventions, sanctioned exceptions, usage counts
+and audit method. Other docs link here instead of repeating them. It
+complements:
 
 - [`docs/dev/tanstack-query.md`](../../../docs/dev/tanstack-query.md) — phase
-  history (P1–P7) and the migration worklist.
+  history (P1–P7), the design record, and the P8 roadmap.
 - [`docs/dev/ui-server-state.md`](../../../docs/dev/ui-server-state.md) — the
   policy contract for server vs client state and per-resource ownership.
 - `queries/<area>/README.md` — per-area resource manifests.
@@ -50,7 +50,7 @@ This file owns the layer map, conventions and exception list. It complements:
 | `useQuery` | **143 / 89** | The established read mechanism; most use `{ ...factoryOptions(), enabled }`. |
 | `useQueries` | **4 / 4** | `CuratedProfileModal`, `WorkersPanel`, `TrainingWorkerBar`, compare `SessionView`. |
 | `useMutation` | **121 / 46** | Writes with a pending/error lifecycle. |
-| `queryClient.query(...)` | **64 / 29** | One-shot reads, form seeding, store/service reads. No `fetchQuery` (ESLint-guarded). |
+| `queryClient.query(...)` | **45 / 20** | One-shot reads, form seeding, store/service reads. Per-site verdicts in [the P8 roadmap](../../../docs/dev/tanstack-query.md#appendix-p8-reactive-read-migration). No `fetchQuery` (ESLint-guarded). |
 | `useQueryClient()` | **55 / 49** | Mostly for `queryManager` invalidation helpers. |
 | `setQueryData` / `setQueriesData` | **35 / 8** | In-place patches and SSE updates; `setQueriesData` spans cached lists. |
 | `getQueryData` | **6 / 6** | SSE diffing, optimistic restore, projections, peaks, compare rollback, training job kind. |
@@ -96,6 +96,19 @@ This file owns the layer map, conventions and exception list. It complements:
 7. **Keys:** to move an entry to a new id/scope, add a composer in `keys.ts`;
    never splice a tuple by index.
 8. **Optimistic updates:** snapshot in `onMutate`, restore in `onError`.
+9. **One-shot form reads:** a read that only seeds a form or wizard uses
+   `queryClient.query()` with `staleTime: 0` and is never observed.
+10. **Imperative orchestration:** long-lived job and stream flows stay outside
+    React with their own request and progress state. Training commands
+    invalidate through `trainingWritePlan`.
+11. **Deletes:** cancel the old reads before the command and again after
+    success, then remove the accepted rows.
+12. **Hooks:** factory-in-component is the default. A named hook exists only
+    when the query lifecycle or derived state is shared (`useRunJob`,
+    `useJobSelection`, `useReferenceTracks`, `useVram`), or the hook owns
+    non-query work (`useDownloadStream`, `useCaptionFile`,
+    `useEnvSettingsForm`). Single-consumer wrappers may sit next to their
+    component; move them into `queries/<area>/` when a second consumer appears.
 
 ### Sanctioned exceptions (change the doc before “fixing” one)
 
@@ -104,11 +117,16 @@ This file owns the layer map, conventions and exception list. It complements:
 | SSE streams (`sharedEventSource.ts`, `useEventSource.ts`, `bridgeEvents`) | Axios cannot stream response bodies; the bridge fills the same cache entries. |
 | Media blobs and peaks (`StemMixer`, `useAbEngine`, `useStreamAudio`, `audio/peaksClient`) | Binary playback, not JSON server state. |
 | `/api/health` probes (`App.tsx`) | Liveness transport that may reload the page; it must not pollute the cache. |
-| Sidecar text reads (`utils/lrcUtils.ts`, `utils/wordLrcUtils.ts`) | Text payloads outside the JSON transport, keyed through `sharedKeys`. |
-| Queryable POST (`yue2CoverApi.ts`) | Read-only and idempotent; `filters` carry only answer-changing fields (`songId`/`sourceAudioUrl`, `abc`/`lyrics`). |
-| `useDownloadStream` disabled observer | Deliberate SSE cache slot. |
+| Sidecar text reads (`utils/lrcUtils.ts`, `utils/wordLrcUtils.ts`, `LyricsBar`, `SectionMarkers`) | Text payloads outside the JSON transport, keyed through `sharedKeys`; absent and failed both mean "no lyrics". |
+| Queryable POST (`yue2CoverApi.ts`, `cover-lyrics/cover` for `/source-metadata` and `/sections/review`) | Read-only and idempotent; `filters` carry only answer-changing fields (`songId`/`sourceAudioUrl`, `abc`/`lyrics`), never hints such as `sourceLabel` or `force`. |
+| `useDownloadStream` disabled observer (`components/model-manager/useDownloadStream.ts`, `global-models/downloads`) | Deliberate SSE cache slot: the download bridge replaces the whole entry with each validated frame, so there is no snapshot to fetch. |
 | `waitForSnapshot` / `waitForQuery` | Services and stores cannot use hooks; the observer reuses the same cache and polling policy. |
 | Fixed-cadence `refetchInterval` (Directed Drift 2 s, VST GUI 1.5 s) | A missed tick is replaced by the next one, so `pollWhile` backoff only adds latency. |
+| `Sa3TrainCard` local status factory | F4#17 until SA3 moves into `training-data`. |
+| `Yue2CoverDrift`, `useCoverArtGeneration` follow-up | The result is module state or a `cover-art-updated` event, not a cache read. |
+| `BackendToggle.tsx:32`, `MonitorBar.tsx:29` side-effect observers | The observer keeps the entry fetched and the monitor polled; the store projection (`backendStore`, `vstChainStore`) owns the visible state. |
+| `NoModelsBanner` | Derived banner; an error must not claim "no models". |
+| `SettingsPanel` health/worker reads | Ancillary status; the env hook renders its own line. |
 
 ---
 
@@ -140,10 +158,9 @@ relevant area README; this table is the index.
 | P2#6 | No Query Devtools | Decided against; `getQueryCache()` and the network panel cover debugging. |
 | P2#7 | `useQuery({ enabled: false })` as a cache slot | Documented exception (`useDownloadStream`, training job cache observer). |
 
-**Silent read-error readers by design:** `BackendToggle` and `MonitorBar`
-(side-effect observers), `LyricsBar` and `SectionMarkers` (absent and failed both
-mean “no lyrics”), `NoModelsBanner` (an error must not claim “no models”), and
-`SettingsPanel` (health/worker status is ancillary; the env hook renders it).
+**Silent read-error readers by design** are covered by the exception table
+above: `BackendToggle`, `MonitorBar`, `LyricsBar`, `SectionMarkers`,
+`NoModelsBanner` and `SettingsPanel`.
 
 ---
 
@@ -158,6 +175,8 @@ rg -n "\.query\("         ui/src --glob '!*.test.*'
 rg -n "useQueryClient\("  ui/src --glob '!*.test.*'
 rg -n "invalidateQueries" ui/src --glob '!*.test.*'
 rg -n "fetch\("           ui/src --glob '!*.test.*'
+rg -n "fetchQuery"        ui/src --glob '!*.test.*'
+rg -n "queryKey:"         ui/src/components --glob '*.tsx'
 rg -n "setInterval"       ui/src --glob '!*.test.*'
 rg -n "queryFn:"          ui/src --glob '!*.test.*'
 ```

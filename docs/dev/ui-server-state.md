@@ -262,14 +262,12 @@ useEffect(() => bridgeEvents(queryClient, {
 
 ## Sanctioned exceptions
 
-Three unusual patterns are deliberate. They stay, and new code copies them
-only for the same reason.
-
-| Pattern | Where | Why it stays |
-|---|---|---|
-| A disabled query as a stream's cache slot: `enabled: false`, a `queryFn` that never runs, `initialData: []` | `components/model-manager/useDownloadStream.ts:16–19`, key `global-models/downloads` | The download SSE bridge (`queries/global-models/downloads.ts`) replaces the whole entry with each validated frame, so there is no snapshot to fetch |
-| A read-only POST with its request body in the key's `filters` (a "queryable POST") | `services/yue2CoverApi.ts`, `cover-lyrics/cover` for `/source-metadata` and `/sections/review` | An idempotent read that needs a body. The `filters` are bounded to the fields that change the answer (song/url, or abc/lyrics), so request hints such as `sourceLabel` and `force` cannot multiply entries |
-| A `useQuery` mounted only for its side effect, with its result unused | `components/global-bar/BackendToggle.tsx:32` (`global-models/backends`), `components/global-bar/MonitorBar.tsx:29` (`global-models/monitor`) | The observer keeps the entry fetched, and the monitor polled, for the store projections that read it (`backendStore`, `vstChainStore`). The entry's liveness follows the component's mount |
+The single exception list is owned by
+[queries/README §2](../../ui/src/queries/README.md#sanctioned-exceptions-change-the-doc-before-fixing-one).
+Three of its rows started here as architectural patterns: the disabled query as
+a stream's cache slot, the queryable POST, and the side-effect-only observer.
+New code copies one only for the same reason, and changing a row starts in that
+table.
 
 ## Consumer manifest
 

@@ -6,8 +6,9 @@ implementation follows.
 
 Companion documents (they own the detail this page does not repeat):
 
-- [ui/src/queries/README.md](../../ui/src/queries/README.md) — layer map,
-  per-area manifests, usage inventory.
+- [ui/src/queries/README.md](../../ui/src/queries/README.md) — owner of the
+  layer map, conventions, sanctioned exceptions, usage counts and audit method.
+  This page links there instead of copying those tables.
 - [ui-server-state.md](ui-server-state.md) — policy contract: server vs client
   state, key schema, consumer manifest.
 - [architecture.md — UI server state](architecture.md#ui-server-state) — the
@@ -28,7 +29,7 @@ in the sanctioned table below.
 | **P4** — reads and timers | Storm poll/control, disco wait, VST poll, scans | F3 | **Done.** Uploads on `useUpload`; polls on `refetchInterval`/`pollWhile`; disco on `waitForQuery`; scans/previews converted. No component-owned network interval remains outside the health probe |
 | **P5** — env form | `useEnvSettingsForm` over `useQuery` | — | **Done.** Draft/seed/save lifecycle + draft-safety tests |
 | **P6** — composers and dedup | One factory per entity, duplicate factories removed | F4 | **Done.** F4 #1–#13 closed; #14–#17 sanctioned |
-| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Done.** 7.2 (queue projection) and 7.1(a–d) (one job cache, one stream opener, store keeps only the selected id) shipped (see §7) |
+| **P7** — structural | Training SSE second owner, audio-queue executor state | F3 remainder | **Done.** 7.2 (queue projection) and 7.1(a–d) (one job cache, one stream opener, store keeps only the selected id) shipped |
 
 **Verification (2026-10-28):** `tsc -b` clean; UI suite **462 pass / 0 fail /
 1 skip**; whole-`src` ESLint **824 findings**, all pre-existing categories and
@@ -47,30 +48,10 @@ zero project-guard hits; `npm run build` ✓; `node tools/docs/check-docs.mjs` �
 [ REST API ]           SSE is a separate push channel into the cache
 ```
 
-| Concern | Owner | Rule |
-|---|---|---|
-| HTTP config, auth, timeouts | Axios instance + interceptors | Bearer from the session accessor; slow routes use `SLOW_ROUTE_TIMEOUT_MS` |
-| Cache, dedup, retry, status | `queries/contract.ts` + `client.ts` | staleTime 30 s, gcTime 5 min, focus refetch off, retry ≤ 2 for network/5xx |
-| Errors | Axios response interceptor | The one notifier; GETs stay silent. A component that renders its own error line passes `silent: true` |
-| Invalidation | `queries/invalidation.ts` | Only file that calls `invalidateQueries`; writes name events or exact keys |
-| SSE | `queries/sseBridge.ts` | Streams never become a second fetch owner; writes patch or invalidate the same entries |
-| Non-React waits | `queries/wait.ts` | One `QueryObserver` waiter with auth-epoch guard and duplicate suppression |
-| Job follows | `queries/workflowFollow.ts` | One loop: abort plumbing, epoch guard, 50 ms coalesced invalidation |
-
-## Keys
-
-Every key is the five-slot tuple built by `serverKey()`:
-
-```
-['hs', resource, scope, id, filters]
-```
-
-`resource` is a shared name from `keys.ts` or `<area>/<name>`. `scope` carries
-the API base and, only where the answer depends on them, `session` (opaque
-epoch, never a token), `worker` (training target; `null` = this PC) and
-`backend`. `normalizeFilters` sorts and drops empty values so equal requests
-share an entry. A `queryFn` reads its target from its own key via `scopeOf()` /
-`workerOf()`, never from a live selection.
+The module-by-module map and the client policy live in
+[queries/README §1](../../ui/src/queries/README.md#1-layer-map). The key schema,
+key rules and shared-key table live in [ui-server-state.md#keys](ui-server-state.md#keys).
+The table below is the part that changes when a new resource class appears.
 
 ## The pattern by entity type
 
@@ -99,40 +80,10 @@ areas.
 
 ## Conventions
 
-### Reads
-
-- Declare an options factory in the owning area; consume it with
-  `useQuery(factory(...))`. Never build a key or `queryFn` in a component.
-- Override `enabled`, `retry` or `refetchInterval` by spreading the factory;
-  do not fork it.
-- One-shot reads that seed a form or a wizard use `queryClient.query()` with
-  `staleTime: 0` and are never observed.
-
-### Writes
-
-- A React write is one `useMutation`; pending/error derive from `isPending` /
-  `error`.
-- A non-React write is `writeAndInvalidate`; the plan argument is mandatory.
-- Long-lived job/stream orchestration stays imperative with its own request
-  and progress state.
-- Optimistic writes need an `onError` restore (SongBuilder's section ops are
-  the only current case).
-
-### Invalidation
-
-- `queryManager.events` for cross-cutting writes; `queryManager.invalidate`
-  with captured keys for parameterized writes.
-- `trainingWritePlan` covers training commands (worker scope + preparation
-  pair).
-- Deleting cancels old reads before the command and again after success, then
-  removes the accepted rows.
-
-### Polling
-
-- `refetchInterval: pollWhile(predicate)` — terminal stop, error backoff to
-  30 s. Fixed cadences are allowed only when a missed tick is worthless and
-  must be recorded in the sanctioned table.
-- Non-React code uses `waitForSnapshot` / `waitForQuery`, not its own timer.
+The read, write, invalidation, polling, delete and hook-placement rules are
+owned by [queries/README §2](../../ui/src/queries/README.md#2-conventions-for-new-work).
+This page adds the transport-level detail those rules assume, and a new
+sanctioned exception changes that table first.
 
 ### Errors
 
@@ -144,157 +95,227 @@ response → unreachable, one deduped warn on 401, translated `api.error.*` for
 stay on XHR for progress but route failures through the same handler; their
 timeout is a silence watchdog, not `xhr.timeout`.
 
-### Hooks
-
-The default is factory-in-component. Named hooks exist when the query
-lifecycle or derived state is shared (`useRunJob`, `useJobSelection`,
-`useReferenceTracks`, `useVram`) or the hook owns non-query work
-(`useDownloadStream`, `useCaptionFile`, `useEnvSettingsForm`). Single-consumer
-wrappers may sit next to their component; move them into `queries/<area>/`
-when a second consumer appears.
-
-## Inventory (non-test, 2026-10-28)
-
-| API | Count | Note |
-|---|---|---|
-| `useQuery` | 143 sites / 89 files | Declarative reads — the norm |
-| `useQueries` | 4 / 4 | Worker dispatch, worker list, curated profile, compare takes |
-| `useMutation` | 121 / 46 | Named writes carry a pending/error lifecycle |
-| `queryClient.query()` | 64 / 29 | One-shot reads; form/store/service seeding |
-| `queryClient.fetchQuery` | 0 | Renamed by P1; guarded |
-| `getQueryData` | 6 / 6 | SSE diff, optimistic restore, projections, peaks, compare rollback |
-| `setQueryData` / `setQueriesData` | 35 / 8 | SSE writes and deliberate in-place patches; `setQueriesData` spans cached lists |
-| `useQueryClient` | 55 / 49 | Mostly to call `queryManager` |
-| `invalidateQueries` | 2 calls, 1 file | `queries/invalidation.ts` only |
-| `cancelQueries` / `removeQueries` | 19 / 7 | Allowed anywhere; they drop work, they do not refetch |
-| `queryOptions()` | 111 / 18 | Area slices; generic helpers live in `global-models` and `cover-lyrics` |
-
-## Sanctioned exceptions
-
-| Exception | Why it stays |
-|---|---|
-| SSE streams (`sharedEventSource`, `useEventSource`, `bridgeEvents`) | Axios cannot stream response bodies; the bridge writes the same cache |
-| Media/peaks (`StemMixer`, `useAbEngine`, `useStreamAudio`, `peaksClient`) | Binary playback, not JSON server state |
-| `/api/health` probes (`App.tsx`) | Liveness transport; must not pollute the cache |
-| Sidecar text reads (`lrcUtils`, `wordLrcUtils`, `shell-queue/lyrics.ts`) | Text payloads outside the JSON transport, keyed through `sharedKeys` |
-| Queryable POST (`yue2CoverApi.ts`) | Read-only, idempotent, body in key; bounded key cardinality is a watch item |
-| `useDownloadStream` disabled observer | Deliberate SSE cache slot (F4#14) |
-| `waitForSnapshot` / `waitForQuery` | Services and stores cannot use hooks |
-| Fixed cadence (Directed Drift 2 s, VST GUI 1.5 s) | A dropped tick is replaced by the next one |
-| `Sa3TrainCard` local status factory | F4#17 until SA3 moves into `training-data` |
-| `Yue2CoverDrift`, `useCoverArtGeneration` follow-up | Result is module state / a `cover-art-updated` event |
-| `BackendToggle`, `MonitorBar` observers | Side-effect-only: the store projection owns the visible state |
-| `LyricsBar`, `SectionMarkers` | Sidecar text; absent and failed both mean "no lyrics" |
-| `NoModelsBanner` | Derived banner; an error must not claim "no models" |
-| `SettingsPanel` health/worker reads | Ancillary status; the env hook renders its own line |
-
 ## Open work
 
-None of the planned P-items remain. §4.12 read failure states closed on
-2026-10-27, the `compareStore` migration (§4.13) closed the same day, the
-audio-queue projection timer (P7.2) closed the same day, and P7.1(a–d) closed on
-2026-10-28. Compare has its own `queries/compare/` slice: read factories for
+P1–P7 are closed. §4.12 read failure states closed on 2026-10-27, the
+`compareStore` migration (§4.13) closed the same day, the audio-queue projection
+timer (P7.2) closed the same day, and P7.1(a–d) closed on 2026-10-28.
+
+The remaining work is P8, the `queryClient.query()` cleanup. It is proposed, not
+started: a sanity check on 2026-10-28 confirmed two duplicate fetch owners, found
+one dead read, and rejected four candidates that must stay. The roadmap, the
+phase order, and the per-site verdicts are in
+[the P8 appendix](#appendix-p8-reactive-read-migration).
+
+Compare has its own `queries/compare/` slice: read factories for
 sessions/detail/search/analysis/diff, mutation hooks for every command, and an
 optimistic score cache with a snapshot rollback. The hand-rolled store was
 deleted.
 
-## P7 — structural design
+## P7 notes
 
-7.2 and 7.1 are closed. Query owns the training job; the store keeps only the
-selected id plus the sample/log/preview/metric reducers.
+The status table and history above record that P7 is closed. The lasting
+invariants: `bridgeRunEvents` merges `job`/`progress`/`status` frames into
+`trainingQueries.job`, `useTrainingJobProjection()` is the single stream opener
+in `TrainingStudio`, and `trainingStore` keeps only `activeJobId`, the worker,
+and the sample/log/preview/metric reducers. `useAudioQueueProjection()` owns the
+queue read with `ACTIVE_POLL_MS` while active and the idle cadence otherwise;
+the executor keeps submission scheduling, engine-park rules and its 2.5 s job
+read.
 
-### 7.1 Training SSE job frames
-
-**Design:** Query owns the job. `bridgeRunEvents` is the only opener and
-applies `job`/`progress`/`status` frames with `setQueryData` (merge, never blank
-a field); the store keeps `activeJobId` and `trainingWorker`;
-`useActiveTrainingJob()` reads the selected id from that cache entry.
-`useTrainingJobProjection()` is mounted once in `TrainingStudio`; it owns the
-stream, the poll and the terminal refresh. Samples, logs, previews and metrics
-stay store-owned until they get their own slices.
-
-**Shipped order:** (a) cache writes in `bridgeRunEvents`; (b)
-`useActiveTrainingJob` and read-heavy cards; (c) delete the store's job copy; (d)
-remove the duplicate opener.
-
-**Shipped (2026-10-27): stage (a).** `bridgeRunEvents` merges `job`,
-`progress` and `status` frames into `trainingQueries.job` through the bridge's
-`update` path: progress implies running, and a frame never blanks a field it
-omits.
-
-**Shipped (2026-10-28): stages (c) and (d).** `trainingStore` no longer holds a
-`TrainingJobSummary`; it stores `activeJobId` and reads the summary from the
-cache through `jobOf()` where a store action needs the job's kind. The
-`job`/`progress`/`status` branches of `applyStreamEvent` are gone — the bridge
-merges those frames into the cache. `useTrainingJobProjection()` (one mount in
-`TrainingStudio`) owns the stream, the poll and `jobTerminal()`; terminal frames
-and the stream-error probe both land in the cache, and `refreshedJobs` still
-dedupes replays. `useTrainingStream` and every duplicate `useRunEvents` call
-were deleted. The ETA/epoch selectors take the job kind from
-`useActiveTrainingJob()`.
-
-**Watch:** MM3/YuE2 status routes share the frame vocabulary; a job stream that
-404s after a server restart is synthesized as failed by the bridge's error
-probe. **Exit met:** one EventSource per selected job, no `TrainingJobSummary`
-in the store.
-
-### 7.2 Audio queue executor — done (2026-10-27)
-
-`queries/shell-queue/projection.ts` exports `useAudioQueueProjection()`,
-mounted once in `App.tsx`. It queries `audioQueueItemsOptions()` with a dynamic
-`refetchInterval`: `ACTIVE_POLL_MS` while the server snapshot or any local row
-is active, and the old seven-tick (~10.5 s) idle cadence otherwise. The store's
-`setInterval` and idle-tick counters are deleted; `applyServerItems()` is still
-the single reducer for completion effects, delivery dedupe, MM3 siblings and
-studio-only rows. Manual commands keep the immediate
-`refreshServerProjection()` path. Store tests tick that path through
-`startProjectionForTests` because they have no React tree.
-
-**Exit met:** no `setInterval` for server queue reads; one dynamic policy.
-The executor keeps submission scheduling, engine-park rules and the 2.5 s
-`_pollUntilDone` job read.
+**Watch:** MM3 and YuE2 status routes share the frame vocabulary, and a job
+stream that 404s after a server restart is synthesized as failed by the bridge's
+error probe.
 
 ## Verification
 
-```bash
-cd ui && npx tsc -b
-cd ui && node --import ../server/node_modules/tsx/dist/loader.mjs --test "src/**/*.test.ts"
-node tools/docs/check-docs.mjs
-```
-
-Exit-criteria greps (from `ui/`):
-
-```bash
-grep -rn "fetchQuery" src --include="*.ts" --include="*.tsx" | grep -v "\.test\."           # empty
-grep -rn "\.invalidateQueries(" src --include="*.ts" --include="*.tsx" | grep -v "\.test\." # invalidation.ts only
-grep -rn "new FormData(" src/services --include="*.ts"                                      # httpClient.upload only
-grep -rn "queryKey:" src/components --include="*.tsx" | grep -v "Options()"                 # only F4#14's SSE slot
-npx eslint src 2>&1 | grep -c "no-restricted-syntax"                                        # 0
-```
-
-Expected UI suite: **462 pass, 0 fail, 1 skip**.
+The commands, guard greps and current totals are owned by
+[queries/README §4](../../ui/src/queries/README.md#4-audit-method). Run them
+there rather than copying an expected number into this page.
 
 ## Phase history
 
-- **2026-10-20** — audit written (F1–F5).
-- **2026-10-21** — P1 (fetchQuery rename + guard) and P2 (axios transport,
-  global interceptor, write helpers) shipped.
-- **2026-10-22** — P3 (component mutations, double-toast sweep) and the
-  post-P3 write-site audit shipped.
-- **2026-10-23/24** — point-in-time read/write/imperative audits closed.
-- **2026-10-25** — last P3 stragglers (extract-kick, quit/restart) moved onto
-  the transport.
-- **2026-10-27** — HeartMuLa re-audit (factory + invalidation + mutation
-  fixes, ESLint invalidation guard); P5 (env hook) and P6 (`yue2CaptionSource`
-  factory) closed; P7 design recorded. Entity-pattern audit: `Worker` unified
-  in `keys.ts`, `training-runs` key names centralised in `TR`, all factories
-  return `queryOptions`, and the last five direct `localOptions` component
-  usages moved onto their area factories. Read-failure sweep closed §4.12
-  (reference browser, Ollama picker, PP-VAE/StableStep probes). Compare moved
-  into `queries/compare/` (§4.13): read factories, mutation hooks, optimistic
-  scoring with rollback, and the hand-rolled store deleted. P7.2 moved the
-  server queue projection onto `useAudioQueueProjection()`; P7.1(a–b) made
-  `bridgeRunEvents` merge job frames into the job cache and
-  `useActiveTrainingJob()` its read owner; P7.1(c–d) deleted the store's job
-  copy and the duplicate stream opener, leaving one projection in
-  `TrainingStudio`.
+The outcome index is the status table above; this is the dated log.
+
+| Date | Milestone |
+|---|---|
+| 2026-10-20 | Audit written (F1–F5). |
+| 2026-10-21 | P1 and P2 shipped. |
+| 2026-10-22 | P3 and the post-P3 write-site audit shipped. |
+| 2026-10-23/24 | Point-in-time read, write and imperative audits closed. |
+| 2026-10-25 | Last P3 stragglers (extract-kick, quit/restart) moved onto the transport. |
+| 2026-10-27 | HeartMuLa re-audit and ESLint invalidation guard; P5 and P6 closed; P7 design recorded. Entity-pattern audit (`Worker` unified in `keys.ts`, `TR` names centralised, factories return `queryOptions`, last five `localOptions` usages moved), §4.12 read-failure sweep, §4.13 compare migration, P7.2, and P7.1(a–b). |
+| 2026-10-28 | P7.1(c–d) closed; P8 measured and sanity-checked. |
+
+## Appendix: P8 reactive read migration
+
+**Status:** Proposed, measured 2026-10-28. Medium priority: duplicated requests
+and store copies that drift from the cache.
+
+`queryClient.query()` appears 45 times in non-test code in 20 files. Most of
+those calls are correct: services and stores cannot use hooks. The problem is a
+subset that duplicates a read the UI already observes through `useQuery`, so the
+same key is fetched twice and the store's copy can disagree with the cache.
+
+The 45 call sites split five ways: 3 component reads to observe (P8.2), 3
+deferred (P8.4), 4 duplicate or dead (P8.1), 7 Training Studio store snapshots
+(P8.3), and 28 sanctioned non-React flows (listed at the end).
+`InstaGenPanel.tsx:157` is a fourth component read, but it enters through
+`instaWorkflowApi.getDocument`, so it is not in the count. Each phase's table is
+the site list; this appendix does not repeat it.
+
+Each phase updates the counts in `ui/src/queries/README.md` and the phase note
+here, uses `queryManager` for every invalidation, and takes its reads from the
+owning factory. A phase is one commit so it can be reverted alone.
+
+### Verified duplicates
+
+Suspected duplicates were sanity-checked on 2026-10-28 before any removal. Same
+key, same data, store readers, and side effects were checked per candidate.
+
+| Resource | Imperative read | Reactive owner | Verdict |
+|---|---|---|---|
+| pipelines | `trainingStore.loadPipelines` (`stores/trainingStore.ts:1087`) | `MonitorPanel.tsx:247` | Duplicate. The store field has no reader. |
+| YuE2 batches | `trainingStore.loadYue2Batches` (`:1117`) | `Yue2BatchPanel.tsx:43`, `useHeartmulaController.ts:36` | Duplicate. One store reader remains, the batch wizard. |
+| train-lm / train-dit status | `loadTrainLmStatus` / `loadTrainDitStatus` (`:862`, `:987`) | `plugins/ace.tsx:130-132` | Not a duplicate. Different keys and different answers. See P8.1. |
+| backend model catalogue | `backendStore.fetchModels` (`:304`) | `backendStore` projection | Not a duplicate. Callers read the projection right after `await`. |
+| backend capabilities / list | `fetchCapabilities` (`:294`), `fetchBackends` (`:273`) | projections | Not duplicates. Warm-up plus `loading`/`error`. |
+| VST chain | `vstChainStore.loadChain` (`:179`) | `vst-chain` projection | Not a duplicate. Only trigger of the initial fetch. |
+| training job probe | `trainingStore.ts:633` | job query | Keep. Removal can flash a synthesized failure. |
+
+### P8.0 Baseline
+
+Record the checks and totals in
+[queries/README §4](../../ui/src/queries/README.md#4-audit-method) before
+editing, plus the current `queryClient.query()` call and file counts. Expected
+today: the 462 pass / 0 fail / 1 skip suite, a clean `tsc -b`, zero
+project-guard findings, docs `ok`, and 45 call sites in 20 files.
+
+### P8.1 Delete the confirmed duplicates
+
+1. `loadPipelines` (`:1087`) plus the `pipelines` and `pipelinesLoading` fields.
+   No component, test, or store action reads either field.
+   `MonitorPanel.tsx:247` owns `trainingQueries.pipelines(worker)` with its own
+   poll. The dataset invalidation at `:1091` only ran after a pipeline command,
+   never during that poll, and `refreshAfterJob` plus
+   `MonitorPanel.tsx:260-266` already cover the dataset list. Drop the check,
+   then confirm by hand that datasets refresh after a stage finishes.
+2. `loadYue2Batches` (`:1117`) plus the `yue2Batches` field, after
+   `Yue2AitkBatchWizard.tsx:20` moves to
+   `useQuery({ ...trainingQueries.yue2Batches(worker), enabled: open })`. Drop
+   the explicit re-reads in `startYue2Batch`, `addToYue2Batch`,
+   `setTrainingWorker` and `workerCommand`; keep their invalidates.
+3. `vstChainStore.pollMonitorStatus` (`:337`). No caller; `MonitorBar.tsx:29`
+   owns the query and the store projection mirrors it.
+
+`vstChainStore.scanPlugins` (`:170`) also drops its own read, because
+`VstChainDropdown.tsx:42` observes `vstScanOptions`. It must still await the
+refetch to clear `scanning`, so it becomes a manager-owned `refetchQueries`, not
+a plain delete.
+
+Why the rejected candidates stay:
+
+- `loadTrainLmStatus` / `loadTrainDitStatus` are a latent bug, not a duplicate.
+  No caller passes the optional query, so `lastTrainLmQuery` and
+  `lastTrainDitQuery` stay undefined and the store always reads empty filters
+  (server default size and dataset slug). `plugins/ace.tsx:130-132` reads the
+  same factory with the form's `lmSize` and `adapterName`, a different key and
+  answer, while `AuditionCard` depends on the store copy for `adapterExists`,
+  `adapterDir`, `variantKey` and `lmSize`. Fix it by giving both consumers one
+  shared key or by passing the panel's parameters into the loader, and delete
+  the dead `lastTrain*Query` state in the same change.
+- `backendStore.fetchModels` is load-bearing:
+  `PresetSettingsModal.tsx:129-131` reads `models[YUE2]` right after
+  `selectModels` resolves, and `audioGenQueueStore.ts:1015-1017` fetches when
+  the catalogue is absent before `yue2PickAtEnqueue`. An invalidate does not
+  refetch an inactive query, so those reads would go stale.
+- `fetchCapabilities` is warm-up after a backend switch and
+  `backendStore.query.test.ts` pins its semantics. `fetchBackends` is awaited at
+  boot and is the error surface for an advisory read.
+- `loadChain` is the only trigger of the initial `vst-chain` fetch; the
+  projection never fetches. Rename it to `prefetchChain` if the intent needs to
+  be clearer.
+
+Exit: the deleted symbols do not appear in `rg`; the batch wizard fetches
+batches itself; Monitor, a "Train on" switch, the YuE2 batch panel and the
+monitor bar each produce one request per key.
+
+### P8.2 Component one-shots become `useQuery`
+
+| File | Change |
+|---|---|
+| `PipelineStageProgress.tsx:66` | Observe `trainingQueries.job(worker, jobId)` with `enabled: !!jobId`, then adopt on `data`. It currently races `useActiveTrainingJob()`. |
+| `SendToLyricStudio.tsx:54` | `useQuery({ ...tq.lyricStudioPreview(worker, datasetId), enabled: open })`; seed the form once from `data`. |
+| `BatchImportWizard.tsx:166` | `useQuery(tq.browse(dir, 'trainingAudio'))`, `enabled: open && !!dir`. Rows stay client state. |
+| `InstaGenPanel.tsx:157` | Replace the `instaWorkflowApi.getDocument` recovery read with `documentOptions(id)`. |
+
+`BatchImportWizard.tsx:134` stays sequential on purpose: 20 folders must not open
+20 concurrent recursive reads. Revisit with `useQueries` only.
+
+### P8.3 Training Studio read migration
+
+The largest phase; removes the store's remaining server snapshots.
+
+1. Add `useTrainingCapabilities()` over `trainingQueries.capabilities(worker)`
+   (it cannot reuse the backend-scoped `useCapabilities`), move the training
+   components off `store.capabilities` (`:571`), then delete the field and
+   loader.
+2. `PreprocessPanel` observes `preprocessStatus(worker, id)` (`:822`) with
+   `pollWhile`; delete the loader and field; the two effects at `:73-84` become
+   one terminal invalidate.
+3. `AuditionCard` observes `trainingQueries.auditions(worker, id)` (`:1011`);
+   delete `loadAuditions` and the field.
+4. Move `datasets` (`:585`) and `detail` (`:603`) to their factories, leaving
+   the store with `selectedDatasetId` and `trainingWorker`, as P7.1 did for jobs.
+   This touches `DatasetList`, `BatchImportWizard`, `Yue2AitkBatchWizard`,
+   `Yue2AitkTrainCard`, `TrainPanel`, `PreprocessPanel`, `RefinePanel`,
+   `BuildPanel`, `SendToLyricStudio`, `DatasetDetail`, `SampleRow`,
+   `TrainingStudio` and `plugins/ace.tsx`. Ship item 4 as its own commit.
+5. Move `trainLmStatus` (`:862`) and `trainDitStatus` (`:987`) last. Fix the key
+   first: no caller passes the filters, so both still read the server default.
+
+Exit: no store snapshot is also observed by `useQuery`, and one key has one
+owner.
+
+### P8.4 Remaining reads and contract reconciliation
+
+1. Add `audioGenerationsOptions(genId, lyricsSetId)` and use `useQueries` in
+   `RecordingsTab.tsx:122` for the fallback statuses.
+2. Convert `ProviderSelector.getCachedProviders` to `getQueryData` plus an
+   `ensureQueryData`-style refresh inside the handler, or list it in the
+   exception table.
+3. Regenerate the counts in `ui/src/queries/README.md`, and fold the final keep
+   list into its sanctioned table.
+4. Add an ESLint rule beside the `fetchQuery` ban: `queryClient.query()` is
+   disallowed under `src/components/`, with an explicit exemption list. Without
+   the guard this drifts back.
+
+Exit: the inventory matches `rg`, the exception table lists every remaining call
+site, and `npx eslint src` reports zero project-guard hits.
+
+### Sanctioned flows (28)
+
+These keep their imperative read. The final exception table gets this list.
+
+- Binary and text payloads: `audio/peaksClient.ts:52`,
+  `utils/yue2CaptionSource.ts:214`.
+- Service or executor reads: `services/yue2CoverApi.ts:210`,
+  `services/supersepApi.ts:122`, `services/stemStudioApi.ts:181`,
+  `queries/shell-queue/queue.ts:125-146` (six executor reads),
+  `queries/shell-queue/preferences.ts:44,58`,
+  `queries/global-models/presets.ts:23`, `queries/cover-lyrics/reads.ts:28`,
+  `queries/cover-lyrics/workflows.ts:27,28`, `queries/studios/workflows.ts:13,14`.
+- Store flows: `trainingStore.ts:633`, `:1624`, `:1675`, `:1679`;
+  `backendStore.ts:273`, `:294`, `:304`; `vstChainStore.ts:179`.
+- Pure handler: `components/training-studio/sendAuditionToCustomGen.ts:14`.
+
+### Definition of done
+
+1. No `queryClient.query()` in component render paths; the handler-only
+   `ProviderSelector.getCachedProviders` is converted or listed.
+2. Every remaining store read is non-React by necessity and named in the
+   sanctioned table.
+3. No key has two fetch owners. Verify through Monitor, a "Train on" switch, a
+   backend switch, and opening the VST chain.
+4. `tsc -b` clean, UI suite green, `npm run build` succeeds, the guard count is
+   zero, `check-docs` prints `ok`, and the inventory numbers are regenerated.
