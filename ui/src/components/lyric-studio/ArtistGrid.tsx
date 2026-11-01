@@ -48,7 +48,7 @@ export const ArtistGrid: React.FC<ArtistGridProps> = ({
 
   if (loading) {
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 p-6">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-4 p-3 sm:p-4 min-[1280px]:p-6">
         {Array.from({ length: 8 }).map((_, i) => (
           <div key={i} className="aspect-[3/4] rounded-2xl bg-white/5 animate-pulse" />
         ))}
@@ -57,11 +57,11 @@ export const ArtistGrid: React.FC<ArtistGridProps> = ({
   }
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Music className="w-7 h-7 text-pink-400" />
-          Lyric Studio
+    <div className="p-3 sm:p-4 min-[1280px]:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 min-w-0">
+        <h1 className="text-2xl font-bold text-white flex min-w-0 items-center gap-3">
+          <Music className="w-7 h-7 flex-shrink-0 text-pink-400" />
+          <span className="truncate">Lyric Studio</span>
         </h1>
         <div className="relative" ref={addBtnRef}>
           <button
@@ -120,7 +120,7 @@ export const ArtistGrid: React.FC<ArtistGridProps> = ({
           </div>
         </div>
       ) : (
-        <div ref={gridRef} className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+        <div ref={gridRef} className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-4">
           {artists.map((artist, idx) => (
             <div
               key={artist.id}

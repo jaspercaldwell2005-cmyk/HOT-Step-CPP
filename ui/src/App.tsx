@@ -1118,7 +1118,7 @@ const AppContent: React.FC = () => {
                 <div className="w-0.5 h-8 rounded-full bg-zinc-600 group-hover:bg-pink-400 transition-colors" />
               </div>
               <DiscoPulseWrapper hue={DISCO.rightSidebar}
-                className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5"
+                className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5 max-xl:max-w-[26vw]"
                 style={{ width: rightSidebarWidth }}
               >
                 <RightSidebar
@@ -1218,7 +1218,7 @@ const AppContent: React.FC = () => {
                 <div className="w-0.5 h-8 rounded-full bg-zinc-600 group-hover:bg-pink-400 transition-colors" />
               </div>
               <DiscoPulseWrapper hue={DISCO.rightSidebar}
-                className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5"
+                className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5 max-xl:max-w-[26vw]"
                 style={{ width: rightSidebarWidth }}
               >
                 <RightSidebar
@@ -1252,9 +1252,9 @@ const AppContent: React.FC = () => {
         <DiscoPulseWrapper
           hue={DISCO.createPanel}
           className="flex-shrink-0 min-w-0 border-zinc-200 dark:border-white/5
-            min-[1024px]:h-full min-[1024px]:border-r
+            min-[1024px]:h-full min-[1024px]:border-r min-[1024px]:max-xl:max-w-[32vw]
             max-[1023px]:!w-full max-[1023px]:border-b max-[1023px]:h-auto max-[1023px]:border-r-0
-            portrait-wide:!w-full portrait-wide:border-b portrait-wide:border-r-0 portrait-wide:h-auto"
+            portrait-wide:!w-full portrait-wide:border-b portrait-wide:border-r-0 portrait-wide:h-auto portrait-wide:max-w-none"
           style={{ width: createPanelWidth }}
         >
           <CreatePanel
@@ -1362,7 +1362,7 @@ const AppContent: React.FC = () => {
             </div>
             <DiscoPulseWrapper hue={DISCO.rightSidebar}
               className="flex-shrink-0 h-full bg-zinc-50 dark:bg-suno z-10 border-l border-zinc-200 dark:border-white/5
-                max-[1023px]:hidden portrait-wide:hidden"
+                max-xl:max-w-[26vw] max-[1023px]:hidden portrait-wide:hidden"
               style={{ width: rightSidebarWidth }}
             >
               <RightSidebar
@@ -1583,7 +1583,7 @@ const AppContent: React.FC = () => {
           <div className="w-0.5 h-8 rounded-full bg-zinc-600 group-hover:bg-pink-400 transition-colors" />
         </div>
         <DiscoPulseWrapper hue={DISCO.activity}
-          className="h-full flex-shrink-0 border-l border-zinc-200 dark:border-white/5 overflow-hidden max-[1023px]:hidden portrait-wide:hidden"
+          className="h-full flex-shrink-0 border-l border-zinc-200 dark:border-white/5 overflow-hidden max-xl:max-w-[30vw] max-[1023px]:hidden portrait-wide:hidden"
           style={{ width: activitySidebarWidth }}
         >
           <ActivitySidebar
@@ -1622,7 +1622,7 @@ const AppContent: React.FC = () => {
               <div className="w-0.5 h-8 rounded-full bg-zinc-600 group-hover:bg-violet-400 transition-colors" />
             </div>
             <DiscoPulseWrapper hue={DISCO.assistant}
-              className="flex-shrink-0 h-full border-l border-zinc-200 dark:border-white/5"
+              className="flex-shrink-0 h-full border-l border-zinc-200 dark:border-white/5 max-xl:max-w-[26vw]"
               style={{ width: assistantWidth }}
             >
               <AssistantPanel onClose={() => setShowAssistant(false)} activeView={activeView} />
