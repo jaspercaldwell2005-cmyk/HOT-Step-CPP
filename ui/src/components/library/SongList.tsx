@@ -1461,7 +1461,7 @@ type ColAlign = 'left' | 'center' | 'right';
 interface ColDef { id: string; label: string; defaultW: number; minW: number; align: ColAlign; resizable: boolean; defaultHidden?: boolean }
 
 const BASE_COLS: ColDef[] = [
-  { id: 'thumb',   label: '',        defaultW: 40,  minW: 32,  align: 'left', resizable: false },
+  { id: 'thumb',   label: '',        defaultW: 48,  minW: 48,  align: 'left', resizable: false },
   { id: 'title',   label: 'Title',   defaultW: 320, minW: 80,  align: 'left', resizable: true },
   { id: 'style',   label: 'Style',   defaultW: 320, minW: 80,  align: 'left', resizable: true },
   { id: 'bpm',     label: 'BPM',     defaultW: 60,  minW: 40,  align: 'left', resizable: true },
