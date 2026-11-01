@@ -686,7 +686,7 @@ export const SongList: React.FC<SongListProps> = ({
       >
       {/* Grid View */}
       {activeViewMode === 'grid' && filteredSongs.length > 0 && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(150px,100%),1fr))] gap-3">
           {pagedSongs.map(song => (
             <SongCard
               key={song.id}
